@@ -71,5 +71,42 @@ namespace FoodyBackend.Controllers
                 return NotFound("CSV file not found");
             }
         }
+        [HttpGet("one-by-ingredient")]
+        public IActionResult GetOneRecipeByIngredient([FromQuery] string ingredient)
+        {
+            if (string.IsNullOrWhiteSpace(ingredient))
+                return BadRequest("Ingredient is required");
+
+            try
+            {
+                var lines = System.IO.File.ReadAllLines(_csvPath);
+
+                if (lines.Length <= 1)
+                    return NotFound("No recipes found");
+
+                var matches = lines
+                    .Skip(1) // skip header
+                    .Select(line => line.Split(','))
+                    .Where(parts =>
+                        parts.Length > 1 &&
+                        parts[1].Contains(ingredient, StringComparison.OrdinalIgnoreCase)
+                    )
+                    .Select(parts => new
+                    {
+                        recipe = parts[0],
+                        ingredients = parts[1]
+                    })
+                    .FirstOrDefault();
+
+                if (matches == null)
+                    return NotFound($"No recipes found with ingredient '{ingredient}'");
+
+                return Ok(matches);
+            }
+            catch (FileNotFoundException)
+            {
+                return NotFound("CSV file not found");
+            }
+        }
     }
 }
