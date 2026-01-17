@@ -6,8 +6,8 @@ builder.Services.AddControllers();
 // Configure CORS to allow requests from localhost:5000
 builder.Services.AddCors(options =>
 {
-    options.AddPolicy("AllowLocalhost5000", policy =>
-        policy.WithOrigins("http://localhost:5000", "https://localhost:5000")
+    options.AddPolicy("AllowLocalhost3000", policy =>
+        policy.WithOrigins("http://localhost:3000", "https://localhost:3000")
               .AllowAnyHeader()
               .AllowAnyMethod());
 });
@@ -27,8 +27,8 @@ if (app.Environment.IsDevelopment())
 
 app.UseHttpsRedirection();
 
-// Enable the CORS policy for localhost:5000
-app.UseCors("AllowLocalhost5000");
+// Enable the CORS policy for localhost:3000
+app.UseCors("AllowLocalhost3000");
 
 app.UseAuthorization();
 app.UseRouting();
