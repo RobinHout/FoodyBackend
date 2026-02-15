@@ -1,9 +1,9 @@
 
 namespace FoodyBackend.Models;
 
-public class DietaryRequirement
+public class UserLabel
 {
     public int Id { get; set; }
     public User User { get; set; }
-    public string Ingredient { get; set; }
+    public Label Label { get; set; }
 }
