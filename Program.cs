@@ -1,3 +1,4 @@
+using Microsoft.EntityFrameworkCore;
 var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
@@ -14,7 +15,9 @@ builder.Services.AddCors(options =>
 // Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
-builder.Services.AddControllers();
+builder.Services.AddDbContext<FoodyBackend.DatabaseContext>(options =>
+    options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection")));
+
 
 var app = builder.Build();
 
@@ -33,5 +36,13 @@ app.UseCors("AllowLocalhost3000");
 app.UseAuthorization();
 app.UseRouting();
 app.MapControllers();
+
+// Ensure the database is created
+using (var scope = app.Services.CreateScope())
+{
+    var services = scope.ServiceProvider;
+    var context = services.GetRequiredService<FoodyBackend.DatabaseContext>();
+    context.Database.EnsureCreated();
+}
 
 app.Run();
