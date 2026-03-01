@@ -16,8 +16,8 @@ public class DatabaseContext : DbContext
     {
         if (!optionsBuilder.IsConfigured)
         {
-            var connectionString = "postgresql://postgres:QmTsxuMoGQBuRrKTSxkwiBpFiqbjmJVp@postgres.railway.internal:5432/railway";
-            optionsBuilder.UseNpgsql(connectionString);
+            // The connection string should be provided via dependency injection in Program.cs
+            // Fallback can be configured here if necessary for design-time migrations, but usually not needed.
         }
     }
 
