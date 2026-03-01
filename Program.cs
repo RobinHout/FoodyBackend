@@ -15,6 +15,7 @@ builder.Services.AddCors(options =>
 // Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
+DotNetEnv.Env.Load();
 var connectionUrl = Environment.GetEnvironmentVariable("DATABASE_URL");
 var connectionString = "";
 
@@ -26,20 +27,19 @@ else
 {
     var databaseUri = new Uri(connectionUrl);
     var userInfo = databaseUri.UserInfo.Split(':');
-    var npgsqlBuilder = new Npgsql.NpgsqlConnectionStringBuilder
+    var mysqlBuilder = new MySqlConnector.MySqlConnectionStringBuilder
     {
-        Host = databaseUri.Host,
-        Port = databaseUri.Port > 0 ? databaseUri.Port : 5432,
-        Username = userInfo.Length > 0 ? userInfo[0] : "",
+        Server = databaseUri.Host,
+        Port = (uint)(databaseUri.Port > 0 ? databaseUri.Port : 3306),
+        UserID = userInfo.Length > 0 ? userInfo[0] : "",
         Password = userInfo.Length > 1 ? userInfo[1] : "",
-        Database = databaseUri.LocalPath.TrimStart('/'),
-        SslMode = Npgsql.SslMode.Prefer
+        Database = databaseUri.LocalPath.TrimStart('/')
     };
-    connectionString = npgsqlBuilder.ToString();
+    connectionString = mysqlBuilder.ToString();
 }
 
 builder.Services.AddDbContext<FoodyBackend.DatabaseContext>(options =>
-    options.UseNpgsql(connectionString));
+    options.UseMySql(connectionString, ServerVersion.Parse("8.0.30-mysql")));
 
 
 var app = builder.Build();
