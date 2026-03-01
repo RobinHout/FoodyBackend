@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using FoodyBackend.Models;
 
+
 namespace FoodyBackend;
 
 public class DatabaseContext : DbContext
@@ -10,9 +11,6 @@ public class DatabaseContext : DbContext
         base.OnModelCreating(modelBuilder);
     }
 
-    // public DatabaseContext(DbContextOptions<DatabaseContext> options) : base(options)
-    // {
-    // }
 
     protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
     {
