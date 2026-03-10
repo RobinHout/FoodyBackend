@@ -1,71 +1,37 @@
-using Microsoft.EntityFrameworkCore;
+using FoodyBackend;
 var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
-
-builder.Services.AddControllers();
-// Configure CORS to allow requests from localhost:5000
+// Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
 builder.Services.AddCors(options =>
 {
-    options.AddPolicy("AllowLocalhost3000", policy =>
-        policy.WithOrigins("http://localhost:3000", "https://localhost:3000")
-              .AllowAnyHeader()
-              .AllowAnyMethod());
+    options.AddPolicy("AllowAllApproved",
+        builder =>
+        {
+            builder.WithOrigins("http://localhost:3000", "https://robinhout.github.io")
+                   .AllowAnyMethod()
+                   .AllowAnyHeader()
+                   .AllowCredentials();
+        });
 });
-// Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
+builder.Services.AddDbContext<DatabaseContext>();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
-DotNetEnv.Env.Load();
-var connectionUrl = Environment.GetEnvironmentVariable("DATABASE_URL");
-var connectionString = "";
-
-if (string.IsNullOrEmpty(connectionUrl))
-{
-    connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
-}
-else
-{
-    var databaseUri = new Uri(connectionUrl);
-    var userInfo = databaseUri.UserInfo.Split(':');
-    var mysqlBuilder = new MySqlConnector.MySqlConnectionStringBuilder
-    {
-        Server = databaseUri.Host,
-        Port = (uint)(databaseUri.Port > 0 ? databaseUri.Port : 3306),
-        UserID = userInfo.Length > 0 ? userInfo[0] : "",
-        Password = userInfo.Length > 1 ? userInfo[1] : "",
-        Database = databaseUri.LocalPath.TrimStart('/')
-    };
-    connectionString = mysqlBuilder.ToString();
-}
-
-builder.Services.AddDbContext<FoodyBackend.DatabaseContext>(options =>
-    options.UseMySql(connectionString, ServerVersion.Parse("8.0.30-mysql")));
-
-
+builder.Services.AddControllers();
 var app = builder.Build();
 
 // Configure the HTTP request pipeline.
 if (app.Environment.IsDevelopment())
 {
-    app.UseSwagger();
-    app.UseSwaggerUI();
+    app.UseHttpsRedirection();
 }
+app.UseCors("AllowAllApproved");
+app.UseSwagger();
+app.UseSwaggerUI();
 
-app.UseHttpsRedirection();
-
-// Enable the CORS policy for localhost:3000
-app.UseCors("AllowLocalhost3000");
-
-app.UseAuthorization();
 app.UseRouting();
+// app.UseAuthentication();
+// app.UseAuthorization();
 app.MapControllers();
-
-// Ensure the database is created
-using (var scope = app.Services.CreateScope())
-{
-    var services = scope.ServiceProvider;
-    var context = services.GetRequiredService<FoodyBackend.DatabaseContext>();
-    context.Database.EnsureCreated();
-}
 
 app.Run();

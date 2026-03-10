@@ -6,9 +6,7 @@ namespace FoodyBackend;
 
 public class DatabaseContext : DbContext
 {
-    public DatabaseContext(DbContextOptions<DatabaseContext> options) : base(options)
-    {
-    }
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -21,6 +19,13 @@ public class DatabaseContext : DbContext
         {
             // The connection string should be provided via dependency injection in Program.cs
             // Fallback can be configured here if necessary for design-time migrations, but usually not needed.
+            var connectionString =
+                $"server=maglev.proxy.rlwy.net;" +
+                $"port=3306;" +
+                $"database=railway;" +
+                $"user=root;" +
+                $"password=RmAtHcKSMSnieCvlDeGTFrAnGHvQsIpv;";
+            optionsBuilder.UseMySql(connectionString, ServerVersion.AutoDetect(connectionString));
         }
     }
 
