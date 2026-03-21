@@ -15,7 +15,7 @@ obj/
 .DS_Store
 Thumbs.db
 
-.env
+# .env
 .appdata/
 .dotnet/
 .nuget/
