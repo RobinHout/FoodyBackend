@@ -1,168 +1,369 @@
+using FoodyBackend.Models;
 using Microsoft.AspNetCore.Mvc;
-using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
-using Microsoft.VisualBasic.FileIO; 
-using System.Text;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.VisualBasic.FileIO;
 
+namespace FoodyBackend.Controllers;
 
-namespace FoodyBackend.Controllers
+[ApiController]
+[Route("api/[controller]")]
+public class RecipeController(
+    DatabaseContext context,
+    IConfiguration configuration,
+    IWebHostEnvironment environment) : ControllerBase
 {
-    [ApiController]
-    [Route("api/[controller]")]
-    public class RecipeController : ControllerBase
+    private readonly string _csvPath = ResolveCsvPath(
+        configuration["Database:RecipesCsvPath"] ?? "Data/foodnetwork_recipes.csv",
+        environment.ContentRootPath);
+
+    [HttpGet("random")]
+    public async Task<IActionResult> GetRandomRecipe(CancellationToken cancellationToken)
     {
-        // private string _csvPath = "Data/dinners_100.csv";
-        private string _csvPath = "Data/foodnetwork_recipes.csv";
-
-        [HttpGet("random")]
-        public IActionResult GetRandomRecipe()
+        var recipe = await GetRandomDatabaseRecipeAsync(cancellationToken);
+        if (recipe != null)
         {
-            try
-            {
-                var lines = System.IO.File.ReadAllLines(_csvPath);
-                if (lines.Length <= 1)
-                    return NotFound("No recipes found");
-
-                var random = new Random();
-                var randomLine = lines[random.Next(1, lines.Length)];
-                var parts = randomLine.Split(',');
-
-                return Ok(new { recipe = parts[0], data = randomLine });
-            }
-            catch (FileNotFoundException)
-            {
-                return NotFound("CSV file not found");
-            }
+            return Ok(ToRecipeDetails(recipe));
         }
-        [HttpGet("by-ingredient")]
-        public IActionResult GetRecipesByIngredient([FromQuery] string ingredient)
-        {
-            if (string.IsNullOrWhiteSpace(ingredient))
-                return BadRequest("Ingredient is required");
 
-            try
-            {
-                var lines = System.IO.File.ReadAllLines(_csvPath);
+        var csvRecipe = GetRandomCsvRecipe();
+        return csvRecipe is null ? NotFound("No recipes found") : Ok(csvRecipe);
+    }
 
-                if (lines.Length <= 1)
-                    return NotFound("No recipes found");
-
-                var matches = lines
-                    .Skip(1) // skip header
-                    .Select(line => line.Split(','))
-                    .Where(parts =>
-                        parts.Length > 1 &&
-                        parts[1].Contains(ingredient, StringComparison.OrdinalIgnoreCase)
-                    )
-                    .Select(parts => new
-                    {
-                        recipe = parts[0],
-                        ingredients = parts[1]
-                    })
-                    .ToList();
-
-                if (!matches.Any())
-                    return NotFound($"No recipes found with ingredient '{ingredient}'");
-
-                return Ok(matches);
-            }
-            catch (FileNotFoundException)
-            {
-                return NotFound("CSV file not found");
-            }
-        }
-       [HttpGet("by-number/{number:int}")]
-public IActionResult GetRecipesByNumber(int number)
-{
-    if (number <= 0)
-        return BadRequest("Number must be >= 1");
-
-    try
+    [HttpGet("by-ingredient")]
+    public async Task<IActionResult> GetRecipesByIngredient([FromQuery] string ingredient, CancellationToken cancellationToken)
     {
-        var lines = System.IO.File.ReadAllLines(_csvPath);
+        if (string.IsNullOrWhiteSpace(ingredient))
+        {
+            return BadRequest("Ingredient is required");
+        }
 
-        if (lines.Length <= 1)
-            return NotFound("No recipes found");
+        var matches = await context.Recipes
+            .AsNoTracking()
+            .Where(recipe => EF.Functions.Like(recipe.Ingredients, $"%{ingredient}%"))
+            .OrderBy(recipe => recipe.Id)
+            .Take(50)
+            .Select(recipe => new
+            {
+                recipe = recipe.Title,
+                ingredients = recipe.Ingredients,
+                directions = recipe.Directions,
+                link = recipe.Link,
+                source = recipe.Source
+            })
+            .ToListAsync(cancellationToken);
 
-        // number=1 should return first recipe line (lines[1])
-        var lineIndex = number; // because lines[0] is header
+        if (matches.Count > 0)
+        {
+            return Ok(matches);
+        }
 
-        if (lineIndex >= lines.Length)
-            return NotFound($"No recipe found with number '{number}'");
+        var csvMatches = GetCsvRecipesByIngredient(ingredient);
+        return csvMatches.Count == 0
+            ? NotFound($"No recipes found with ingredient '{ingredient}'")
+            : Ok(csvMatches);
+    }
 
-        var line = lines[lineIndex];
+    [HttpGet("by-number/{number:int}")]
+    public async Task<IActionResult> GetRecipesByNumber(int number, CancellationToken cancellationToken)
+    {
+        if (number <= 0)
+        {
+            return BadRequest("Number must be >= 1");
+        }
 
-        // Parse CSV line safely (handles commas inside quotes)
-        var fields = ParseCsvLine(line);
+        var databaseRecipe = await context.Recipes
+            .AsNoTracking()
+            .OrderBy(recipe => recipe.Id)
+            .Skip(number - 1)
+            .FirstOrDefaultAsync(cancellationToken);
 
-        if (fields.Length < 2)
-            return BadRequest("CSV row malformed");
+        if (databaseRecipe != null)
+        {
+            return Ok(ToRecipeDetails(databaseRecipe));
+        }
+
+        var csvRecipe = GetCsvRecipeByNumber(number);
+        return csvRecipe is null
+            ? NotFound($"No recipe found with number '{number}'")
+            : Ok(csvRecipe);
+    }
+
+    [HttpGet("one-by-ingredient")]
+    public async Task<IActionResult> GetOneRecipeByIngredient([FromQuery] string ingredient, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(ingredient))
+        {
+            return BadRequest("Ingredient is required");
+        }
+
+        var recipe = await context.Recipes
+            .AsNoTracking()
+            .Where(recipe => EF.Functions.Like(recipe.Ingredients, $"%{ingredient}%"))
+            .OrderBy(recipe => recipe.Id)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (recipe != null)
+        {
+            return Ok(ToRecipeDetails(recipe));
+        }
+
+        var csvRecipe = GetCsvRecipesByIngredient(ingredient).FirstOrDefault();
+        return csvRecipe is null
+            ? NotFound($"No recipes found with ingredient '{ingredient}'")
+            : Ok(csvRecipe);
+    }
+
+    [HttpPost("import-csv")]
+    public async Task<IActionResult> ImportRecipesFromCsv([FromQuery] int? limit, CancellationToken cancellationToken)
+    {
+        if (limit is <= 0)
+        {
+            return BadRequest("Limit must be greater than 0 when it is provided.");
+        }
+
+        if (!System.IO.File.Exists(_csvPath))
+        {
+            return NotFound($"CSV file not found at '{_csvPath}'.");
+        }
+
+        if (await context.Recipes.AnyAsync(cancellationToken))
+        {
+            return Conflict("The Recipes table already contains data. Import is blocked to prevent duplicates.");
+        }
+
+        const int batchSize = 500;
+        var batch = new List<Recipe>(batchSize);
+        var imported = 0;
+
+        using var streamReader = new StreamReader(_csvPath);
+        using var parser = CreateParser(streamReader);
+
+        if (!parser.EndOfData)
+        {
+            parser.ReadFields();
+        }
+
+        while (!parser.EndOfData && (!limit.HasValue || imported < limit.Value))
+        {
+            var fields = parser.ReadFields();
+            if (fields == null || fields.Length < 5)
+            {
+                continue;
+            }
+
+            batch.Add(new Recipe
+            {
+                Title = fields[0],
+                Ingredients = fields[1],
+                Directions = fields.Length > 2 ? fields[2] : string.Empty,
+                Link = fields.Length > 3 ? NormalizeLink(fields[3]) : string.Empty,
+                Source = fields.Length > 4 ? fields[4] : string.Empty
+            });
+            imported++;
+
+            if (batch.Count < batchSize)
+            {
+                continue;
+            }
+
+            context.Recipes.AddRange(batch);
+            await context.SaveChangesAsync(cancellationToken);
+            batch.Clear();
+        }
+
+        if (batch.Count > 0)
+        {
+            context.Recipes.AddRange(batch);
+            await context.SaveChangesAsync(cancellationToken);
+        }
 
         return Ok(new
         {
-            recipe = fields[0],
-            ingredients = fields[1],
-            directions = fields.Length > 2 ? fields[2] : null,
-            link = fields.Length > 3 ? fields[3] : null,
-            source = fields.Length > 4 ? fields[4] : null,
-            ner = fields.Length > 5 ? fields[5] : null,
+            imported,
+            source = Path.GetFileName(_csvPath)
         });
     }
-    catch (FileNotFoundException)
-    {
-        return NotFound("CSV file not found");
-    }
-}
 
-private static string[] ParseCsvLine(string line)
-{
-    using var reader = new StringReader(line);
-    using var parser = new TextFieldParser(reader)
+    private async Task<Recipe?> GetRandomDatabaseRecipeAsync(CancellationToken cancellationToken)
     {
-        TextFieldType = FieldType.Delimited,
-        HasFieldsEnclosedInQuotes = true
-    };
-    parser.SetDelimiters(",");
-    return parser.ReadFields() ?? Array.Empty<string>();
-}
-        [HttpGet("one-by-ingredient")]
-        public IActionResult GetOneRecipeByIngredient([FromQuery] string ingredient)
+        var totalRecipes = await context.Recipes.CountAsync(cancellationToken);
+        if (totalRecipes == 0)
         {
-            if (string.IsNullOrWhiteSpace(ingredient))
-                return BadRequest("Ingredient is required");
+            return null;
+        }
 
-            try
+        var offset = Random.Shared.Next(totalRecipes);
+        return await context.Recipes
+            .AsNoTracking()
+            .OrderBy(recipe => recipe.Id)
+            .Skip(offset)
+            .FirstOrDefaultAsync(cancellationToken);
+    }
+
+    private object? GetRandomCsvRecipe()
+    {
+        if (!System.IO.File.Exists(_csvPath))
+        {
+            return null;
+        }
+
+        string[]? selectedFields = null;
+        var seen = 0;
+
+        using var streamReader = new StreamReader(_csvPath);
+        using var parser = CreateParser(streamReader);
+
+        if (!parser.EndOfData)
+        {
+            parser.ReadFields();
+        }
+
+        while (!parser.EndOfData)
+        {
+            var fields = parser.ReadFields();
+            if (fields == null || fields.Length < 2)
             {
-                var lines = System.IO.File.ReadAllLines(_csvPath);
-
-                if (lines.Length <= 1)
-                    return NotFound("No recipes found");
-
-                var matches = lines
-                    .Skip(1) // skip header
-                    .Select(line => line.Split(','))
-                    .Where(parts =>
-                        parts.Length > 1 &&
-                        parts[1].Contains(ingredient, StringComparison.OrdinalIgnoreCase)
-                    )
-                    .Select(parts => new
-                    {
-                        recipe = parts[0],
-                        ingredients = parts[1]
-                    })
-                    .FirstOrDefault();
-
-                if (matches == null)
-                    return NotFound($"No recipes found with ingredient '{ingredient}'");
-
-                return Ok(matches);
+                continue;
             }
-            catch (FileNotFoundException)
+
+            seen++;
+            if (Random.Shared.Next(seen) == 0)
             {
-                return NotFound("CSV file not found");
+                selectedFields = fields;
             }
         }
+
+        return selectedFields == null ? null : ToRecipeDetails(selectedFields);
+    }
+
+    private List<object> GetCsvRecipesByIngredient(string ingredient)
+    {
+        var matches = new List<object>();
+        if (!System.IO.File.Exists(_csvPath))
+        {
+            return matches;
+        }
+
+        using var streamReader = new StreamReader(_csvPath);
+        using var parser = CreateParser(streamReader);
+
+        if (!parser.EndOfData)
+        {
+            parser.ReadFields();
+        }
+
+        while (!parser.EndOfData)
+        {
+            var fields = parser.ReadFields();
+            if (fields == null || fields.Length < 2)
+            {
+                continue;
+            }
+
+            if (!fields[1].Contains(ingredient, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            matches.Add(ToRecipeDetails(fields));
+            if (matches.Count == 50)
+            {
+                break;
+            }
+        }
+
+        return matches;
+    }
+
+    private object? GetCsvRecipeByNumber(int number)
+    {
+        if (!System.IO.File.Exists(_csvPath))
+        {
+            return null;
+        }
+
+        var index = 0;
+
+        using var streamReader = new StreamReader(_csvPath);
+        using var parser = CreateParser(streamReader);
+
+        if (!parser.EndOfData)
+        {
+            parser.ReadFields();
+        }
+
+        while (!parser.EndOfData)
+        {
+            var fields = parser.ReadFields();
+            if (fields == null || fields.Length < 2)
+            {
+                continue;
+            }
+
+            index++;
+            if (index == number)
+            {
+                return ToRecipeDetails(fields);
+            }
+        }
+
+        return null;
+    }
+    private static object ToRecipeDetails(Recipe recipe)
+    {
+        return new
+        {
+            recipe = recipe.Title,
+            ingredients = recipe.Ingredients,
+            directions = recipe.Directions,
+            link = NormalizeLink(recipe.Link),
+            source = recipe.Source,
+            data = (string?)null
+        };
+    }
+
+    private static object ToRecipeDetails(IReadOnlyList<string> fields)
+    {
+        return new
+        {
+            recipe = fields.ElementAtOrDefault(0),
+            ingredients = fields.ElementAtOrDefault(1),
+            directions = fields.ElementAtOrDefault(2),
+            link = NormalizeLink(fields.ElementAtOrDefault(3)),
+            source = fields.ElementAtOrDefault(4),
+            ner = fields.ElementAtOrDefault(5),
+            data = string.Join(",", fields)
+        };
+    }
+
+    private static TextFieldParser CreateParser(TextReader reader)
+    {
+        var parser = new TextFieldParser(reader)
+        {
+            TextFieldType = FieldType.Delimited,
+            HasFieldsEnclosedInQuotes = true
+        };
+        parser.SetDelimiters(",");
+        return parser;
+    }
+
+    private static string ResolveCsvPath(string configuredPath, string contentRootPath)
+    {
+        return Path.IsPathRooted(configuredPath)
+            ? configuredPath
+            : Path.GetFullPath(Path.Combine(contentRootPath, configuredPath));
+    }
+
+    private static string NormalizeLink(string? link)
+    {
+        if (string.IsNullOrWhiteSpace(link))
+        {
+            return string.Empty;
+        }
+
+        return link.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+               link.StartsWith("https://", StringComparison.OrdinalIgnoreCase)
+            ? link
+            : $"https://{link}";
     }
 }

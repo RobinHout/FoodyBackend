@@ -50,6 +50,18 @@ namespace FoodyBackend.Controllers
                 return BadRequest();
             }
 
+            if (dinner.GroupId == 0 && dinner.Group?.Id > 0)
+            {
+                dinner.GroupId = dinner.Group.Id;
+            }
+
+            if (!await _context.Groups.AnyAsync(group => group.Id == dinner.GroupId))
+            {
+                return BadRequest($"Group with id {dinner.GroupId} was not found.");
+            }
+
+            dinner.Group = null;
+
             _context.Entry(dinner).State = EntityState.Modified;
 
             try
@@ -76,17 +88,18 @@ namespace FoodyBackend.Controllers
         [HttpPost]
         public async Task<ActionResult<Dinner>> PostDinner(Dinner dinner)
         {
-
-            if (dinner.Group != null)
+            if (dinner.GroupId == 0 && dinner.Group?.Id > 0)
             {
-                 // Check if group exists to prevent duplicate key or attachment issues if needed
-                 var existingGroup = await _context.Groups.FindAsync(dinner.Group.Id);
-                 if (existingGroup != null)
-                 {
-                     dinner.Group = existingGroup;
-                 }
+                dinner.GroupId = dinner.Group.Id;
             }
 
+            var existingGroup = await _context.Groups.FindAsync(dinner.GroupId);
+            if (existingGroup == null)
+            {
+                return BadRequest($"Group with id {dinner.GroupId} was not found.");
+            }
+
+            dinner.Group = existingGroup;
             _context.Dinners.Add(dinner);
             await _context.SaveChangesAsync();
 

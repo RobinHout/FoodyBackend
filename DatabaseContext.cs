@@ -1,41 +1,64 @@
-using Microsoft.EntityFrameworkCore;
 using FoodyBackend.Models;
-
+using Microsoft.EntityFrameworkCore;
 
 namespace FoodyBackend;
 
-public class DatabaseContext : DbContext
+public class DatabaseContext(DbContextOptions<DatabaseContext> options) : DbContext(options)
 {
+    public DbSet<User> Users => Set<User>();
+    public DbSet<Group> Groups => Set<Group>();
+    public DbSet<Dinner> Dinners => Set<Dinner>();
+    public DbSet<Recipe> Recipes => Set<Recipe>();
+    public DbSet<Label> Labels => Set<Label>();
+    public DbSet<RecipeLabel> RecipeLabels => Set<RecipeLabel>();
+    public DbSet<UserLabel> UserLabels => Set<UserLabel>();
+    public DbSet<Answers> Answers => Set<Answers>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
+
+        modelBuilder.Entity<Dinner>()
+            .HasOne(dinner => dinner.Group)
+            .WithMany()
+            .HasForeignKey(dinner => dinner.GroupId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        modelBuilder.Entity<Answers>()
+            .HasOne(answer => answer.Dinner)
+            .WithMany()
+            .HasForeignKey(answer => answer.DinnerId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        modelBuilder.Entity<Answers>()
+            .HasOne(answer => answer.User)
+            .WithMany()
+            .HasForeignKey(answer => answer.UserId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        modelBuilder.Entity<RecipeLabel>()
+            .HasOne(recipeLabel => recipeLabel.Recipe)
+            .WithMany()
+            .HasForeignKey(recipeLabel => recipeLabel.RecipeId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        modelBuilder.Entity<RecipeLabel>()
+            .HasOne(recipeLabel => recipeLabel.Label)
+            .WithMany()
+            .HasForeignKey(recipeLabel => recipeLabel.LabelId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        modelBuilder.Entity<UserLabel>()
+            .HasOne(userLabel => userLabel.User)
+            .WithMany()
+            .HasForeignKey(userLabel => userLabel.UserId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        modelBuilder.Entity<UserLabel>()
+            .HasOne(userLabel => userLabel.Label)
+            .WithMany()
+            .HasForeignKey(userLabel => userLabel.LabelId)
+            .OnDelete(DeleteBehavior.Cascade);
     }
-
-
-    protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
-    {
-        if (!optionsBuilder.IsConfigured)
-        {
-            // The connection string should be provided via dependency injection in Program.cs
-            // Fallback can be configured here if necessary for design-time migrations, but usually not needed.
-            var connectionString =
-                $"server=maglev.proxy.rlwy.net;" +
-                $"port=3306;" +
-                $"database=railway;" +
-                $"user=root;" +
-                $"password=RmAtHcKSMSnieCvlDeGTFrAnGHvQsIpv;";
-            optionsBuilder.UseMySql(connectionString, ServerVersion.AutoDetect(connectionString));
-        }
-    }
-
-    public DbSet<User> Users { get; set; }
-    public DbSet<Group> Groups { get; set; }
-    public DbSet<Dinner> Dinners { get; set; }
-    public DbSet<Recipe> Recipes { get; set; }
-    public DbSet<Label> Labels { get; set; }
-    public DbSet<RecipeLabel> RecipeLabels { get; set; }
-    public DbSet<UserLabel> UserLabels { get; set; }
-    public DbSet<Answers> Answers { get; set; }
 }
 

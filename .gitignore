@@ -16,3 +16,8 @@ obj/
 Thumbs.db
 
 .env
+.appdata/
+.dotnet/
+.nuget/
+run.stdout.log
+run.stderr.log
