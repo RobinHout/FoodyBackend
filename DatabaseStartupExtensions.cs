@@ -11,8 +11,12 @@ public static class DatabaseStartupExtensions
         var logger = scope.ServiceProvider
             .GetRequiredService<ILoggerFactory>()
             .CreateLogger("DatabaseStartup");
+        var connection = context.Database.GetDbConnection();
 
-        logger.LogInformation("Connecting to MySQL using {ConnectionTarget}", DatabaseConnectionStringFactory.BuildSafeDescription(context.Database.GetConnectionString() ?? string.Empty));
+        logger.LogInformation(
+            "Connecting to MySQL database {Database} on {Server}",
+            connection.Database,
+            connection.DataSource);
 
         if (app.Configuration.GetValue("Database:AutoMigrate", true))
         {

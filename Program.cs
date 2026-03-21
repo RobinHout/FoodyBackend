@@ -19,7 +19,13 @@ if (!string.IsNullOrWhiteSpace(railwayPort))
     builder.WebHost.UseUrls($"http://0.0.0.0:{railwayPort}");
 }
 
-var connectionString = DatabaseConnectionStringFactory.Build(builder.Configuration);
+var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
+if (string.IsNullOrWhiteSpace(connectionString))
+{
+    throw new InvalidOperationException(
+        "No MySQL connection string was found. Configure ConnectionStrings:DefaultConnection or the ConnectionStrings__DefaultConnection environment variable.");
+}
+
 var allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>() ??
     ["http://localhost:3000", "https://robinhout.github.io"];
 
