@@ -2,21 +2,18 @@ using DotNetEnv;
 using FoodyBackend;
 using Microsoft.EntityFrameworkCore;
 
-var envFilePath = Path.Combine(Directory.GetCurrentDirectory(), ".env");
+var envFilePath = Path.Combine(AppContext.BaseDirectory, ".env");
 if (File.Exists(envFilePath))
 {
     Env.Load(envFilePath);
 }
 
 var builder = WebApplication.CreateBuilder(args);
-builder.Logging.ClearProviders();
-builder.Logging.AddConsole();
-builder.Logging.AddDebug();
 
-var railwayPort = builder.Configuration["PORT"];
-if (!string.IsNullOrWhiteSpace(railwayPort))
+var port = builder.Configuration["PORT"];
+if (!string.IsNullOrWhiteSpace(port))
 {
-    builder.WebHost.UseUrls($"http://0.0.0.0:{railwayPort}");
+    builder.WebHost.UseUrls($"http://0.0.0.0:{port}");
 }
 
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
@@ -29,42 +26,50 @@ if (string.IsNullOrWhiteSpace(connectionString))
 var allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>() ??
     ["http://localhost:3000", "https://robinhout.github.io"];
 
-// Add services to the container.
-// Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
 builder.Services.AddCors(options =>
 {
-    options.AddPolicy("AllowConfiguredOrigins",
-        corsBuilder =>
+    options.AddDefaultPolicy(corsBuilder =>
+    {
+        if (allowedOrigins.Length == 0)
         {
-            corsBuilder.WithOrigins(allowedOrigins)
-                       .AllowAnyMethod()
-                       .AllowAnyHeader()
-                       .AllowCredentials();
-        });
+            corsBuilder.AllowAnyOrigin()
+                .AllowAnyMethod()
+                .AllowAnyHeader();
+            return;
+        }
+
+        corsBuilder.WithOrigins(allowedOrigins)
+            .AllowAnyMethod()
+            .AllowAnyHeader()
+            .AllowCredentials();
+    });
 });
+
 builder.Services.AddDbContext<DatabaseContext>(options =>
     options.UseMySql(
         connectionString,
-        DatabaseServerVersionFactory.Build(builder.Configuration),
-        mySqlOptions => mySqlOptions.EnableRetryOnFailure()));
+        new MySqlServerVersion(new Version(8, 0, 36))));
+
+builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
-builder.Services.AddControllers();
-var app = builder.Build();
-await app.InitializeDatabaseAsync();
 
-// Configure the HTTP request pipeline.
+var app = builder.Build();
+
+using (var scope = app.Services.CreateScope())
+{
+    var database = scope.ServiceProvider.GetRequiredService<DatabaseContext>();
+    await database.Database.MigrateAsync();
+}
+
 if (app.Environment.IsDevelopment())
 {
     app.UseHttpsRedirection();
 }
-app.UseCors("AllowConfiguredOrigins");
+
+app.UseCors();
 app.UseSwagger();
 app.UseSwaggerUI();
-
-app.UseRouting();
-// app.UseAuthentication();
-// app.UseAuthorization();
 app.MapGet("/", () => Results.Ok(new
 {
     message = "FoodyBackend is running",
