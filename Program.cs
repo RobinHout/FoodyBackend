@@ -1,6 +1,6 @@
-using System.Data.Common;
 using FoodyBackend;
 using Microsoft.EntityFrameworkCore;
+using Npgsql;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -10,28 +10,18 @@ if (!string.IsNullOrWhiteSpace(port))
     builder.WebHost.UseUrls($"http://0.0.0.0:{port}");
 }
 
-var connectionString = builder.Configuration.GetConnectionString("DefaultConnection") ??
-    builder.Configuration.GetConnectionString("Default");
+var connectionString = ResolvePostgresConnectionString(builder.Configuration);
 if (string.IsNullOrWhiteSpace(connectionString))
 {
     throw new InvalidOperationException(
-        "No PostgreSQL connection string was found. Set the Railway variable ConnectionStrings__DefaultConnection or ConnectionStrings__Default to a full PostgreSQL connection string.");
+        "No PostgreSQL connection string was found. Set the Railway variable DATABASE_URL.");
 }
 
-var connectionStringBuilder = new DbConnectionStringBuilder
-{
-    ConnectionString = connectionString
-};
-var hasHost = connectionStringBuilder.TryGetValue("Host", out var host) &&
-    !string.IsNullOrWhiteSpace(host?.ToString());
-var hasDatabase = connectionStringBuilder.TryGetValue("Database", out var databaseName) &&
-    !string.IsNullOrWhiteSpace(databaseName?.ToString());
-var hasUsername = connectionStringBuilder.TryGetValue("Username", out var username) &&
-    !string.IsNullOrWhiteSpace(username?.ToString());
-var hasPassword = connectionStringBuilder.TryGetValue("Password", out var password) &&
-    !string.IsNullOrWhiteSpace(password?.ToString());
-
-if (!hasHost || !hasDatabase || !hasUsername || !hasPassword)
+var connectionStringBuilder = new NpgsqlConnectionStringBuilder(connectionString);
+if (string.IsNullOrWhiteSpace(connectionStringBuilder.Host) ||
+    string.IsNullOrWhiteSpace(connectionStringBuilder.Database) ||
+    string.IsNullOrWhiteSpace(connectionStringBuilder.Username) ||
+    string.IsNullOrWhiteSpace(connectionStringBuilder.Password))
 {
     throw new InvalidOperationException(
         "The PostgreSQL connection string must include Host, Database, Username, and Password.");
@@ -60,7 +50,7 @@ builder.Services.AddCors(options =>
 });
 
 builder.Services.AddDbContext<DatabaseContext>(options =>
-    options.UseNpgsql(connectionString));
+    options.UseNpgsql(connectionStringBuilder.ConnectionString));
 
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
@@ -91,3 +81,51 @@ app.MapGet("/", () => Results.Ok(new
 app.MapControllers();
 
 app.Run();
+
+static string? ResolvePostgresConnectionString(ConfigurationManager configuration)
+{
+    var databaseUrl = configuration["DATABASE_URL"];
+    if (string.IsNullOrWhiteSpace(databaseUrl))
+    {
+        return null;
+    }
+
+    return TryConvertDatabaseUrl(databaseUrl);
+}
+
+static string TryConvertDatabaseUrl(string databaseUrl)
+{
+    if (!Uri.TryCreate(databaseUrl, UriKind.Absolute, out var uri) ||
+        !(string.Equals(uri.Scheme, "postgres", StringComparison.OrdinalIgnoreCase) ||
+          string.Equals(uri.Scheme, "postgresql", StringComparison.OrdinalIgnoreCase)))
+    {
+        return databaseUrl;
+    }
+
+    var userInfoParts = uri.UserInfo.Split(':', 2);
+    var builder = new NpgsqlConnectionStringBuilder
+    {
+        Host = uri.Host,
+        Port = uri.IsDefaultPort ? 5432 : uri.Port,
+        Database = Uri.UnescapeDataString(uri.AbsolutePath.Trim('/')),
+        Username = userInfoParts.Length > 0 ? Uri.UnescapeDataString(userInfoParts[0]) : string.Empty,
+        Password = userInfoParts.Length > 1 ? Uri.UnescapeDataString(userInfoParts[1]) : string.Empty
+    };
+
+    foreach (var segment in uri.Query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries))
+    {
+        var pair = segment.Split('=', 2);
+        var key = Uri.UnescapeDataString(pair[0]);
+        var value = pair.Length > 1 ? Uri.UnescapeDataString(pair[1]) : string.Empty;
+
+        if (string.Equals(key, "sslmode", StringComparison.OrdinalIgnoreCase) &&
+            Enum.TryParse<SslMode>(value, true, out var sslMode))
+        {
+            builder.SslMode = sslMode;
+            continue;
+        }
+
+    }
+
+    return builder.ConnectionString;
+}
