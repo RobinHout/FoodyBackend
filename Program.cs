@@ -1,12 +1,5 @@
-using DotNetEnv;
 using FoodyBackend;
 using Microsoft.EntityFrameworkCore;
-
-var envFilePath = Path.Combine(AppContext.BaseDirectory, ".env");
-if (File.Exists(envFilePath))
-{
-    Env.Load(envFilePath);
-}
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -14,13 +7,6 @@ var port = builder.Configuration["PORT"];
 if (!string.IsNullOrWhiteSpace(port))
 {
     builder.WebHost.UseUrls($"http://0.0.0.0:{port}");
-}
-
-var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
-if (string.IsNullOrWhiteSpace(connectionString))
-{
-    throw new InvalidOperationException(
-        "No MySQL connection string was found. Configure ConnectionStrings:DefaultConnection or the ConnectionStrings__DefaultConnection environment variable.");
 }
 
 var allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>() ??
@@ -45,10 +31,7 @@ builder.Services.AddCors(options =>
     });
 });
 
-builder.Services.AddDbContext<DatabaseContext>(options =>
-    options.UseMySql(
-        connectionString,
-        new MySqlServerVersion(new Version(8, 0, 36))));
+builder.Services.AddDbContext<DatabaseContext>();
 
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
