@@ -11,6 +11,7 @@ public class DatabaseContext(DbContextOptions<DatabaseContext> options) : DbCont
     public DbSet<Recipe> Recipes => Set<Recipe>();
     public DbSet<Label> Labels => Set<Label>();
     public DbSet<RecipeLabel> RecipeLabels => Set<RecipeLabel>();
+    public DbSet<UserGroup> UserGroups => Set<UserGroup>();
     public DbSet<UserLabel> UserLabels => Set<UserLabel>();
     public DbSet<Answers> Answers => Set<Answers>();
 
@@ -46,6 +47,22 @@ public class DatabaseContext(DbContextOptions<DatabaseContext> options) : DbCont
             .HasOne(recipeLabel => recipeLabel.Label)
             .WithMany()
             .HasForeignKey(recipeLabel => recipeLabel.LabelId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        modelBuilder.Entity<UserGroup>()
+            .HasIndex(userGroup => new { userGroup.UserId, userGroup.GroupId })
+            .IsUnique();
+
+        modelBuilder.Entity<UserGroup>()
+            .HasOne(userGroup => userGroup.User)
+            .WithMany()
+            .HasForeignKey(userGroup => userGroup.UserId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        modelBuilder.Entity<UserGroup>()
+            .HasOne(userGroup => userGroup.Group)
+            .WithMany()
+            .HasForeignKey(userGroup => userGroup.GroupId)
             .OnDelete(DeleteBehavior.Cascade);
 
         modelBuilder.Entity<UserLabel>()
