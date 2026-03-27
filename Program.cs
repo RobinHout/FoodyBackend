@@ -1,5 +1,10 @@
 using FoodyBackend;
+using FoodyBackend.Auth;
+using FoodyBackend.Models;
+using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.OpenApi.Models;
 using Npgsql;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -52,9 +57,43 @@ builder.Services.AddCors(options =>
 builder.Services.AddDbContext<DatabaseContext>(options =>
     options.UseNpgsql(connectionStringBuilder.ConnectionString));
 
+builder.Services
+    .AddAuthentication(AuthConstants.Scheme)
+    .AddScheme<AuthenticationSchemeOptions, BearerSessionAuthenticationHandler>(
+        AuthConstants.Scheme,
+        _ => { });
+builder.Services.AddAuthorization();
+builder.Services.AddScoped<IPasswordHasher<User>, PasswordHasher<User>>();
+builder.Services.AddScoped<IAuthSessionService, AuthSessionService>();
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen();
+builder.Services.AddSwaggerGen(options =>
+{
+    options.AddSecurityDefinition(AuthConstants.Scheme, new OpenApiSecurityScheme
+    {
+        Name = "Authorization",
+        Type = SecuritySchemeType.Http,
+        Scheme = "bearer",
+        BearerFormat = "Foody access token",
+        In = ParameterLocation.Header,
+        Description = "Use `Bearer {accessToken}` for protected endpoints."
+    });
+
+    options.AddSecurityRequirement(new OpenApiSecurityRequirement
+    {
+        {
+            new OpenApiSecurityScheme
+            {
+                Reference = new OpenApiReference
+                {
+                    Type = ReferenceType.SecurityScheme,
+                    Id = AuthConstants.Scheme
+                }
+            },
+            Array.Empty<string>()
+        }
+    });
+});
 
 var app = builder.Build();
 
@@ -62,6 +101,9 @@ using (var scope = app.Services.CreateScope())
 {
     var database = scope.ServiceProvider.GetRequiredService<DatabaseContext>();
     await database.Database.MigrateAsync();
+
+    var passwordHasher = scope.ServiceProvider.GetRequiredService<IPasswordHasher<User>>();
+    await LegacyPasswordMigration.UpgradePlainTextPasswordsAsync(database, passwordHasher);
 }
 
 if (app.Environment.IsDevelopment())
@@ -70,6 +112,8 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseCors();
+app.UseAuthentication();
+app.UseAuthorization();
 app.UseSwagger();
 app.UseSwaggerUI();
 app.MapGet("/", () => Results.Ok(new

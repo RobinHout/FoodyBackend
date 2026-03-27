@@ -1,4 +1,6 @@
+using FoodyBackend.Auth;
 using FoodyBackend.Models;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
@@ -9,64 +11,71 @@ namespace FoodyBackend.Controllers;
 public class UserGroupController(DatabaseContext context) : ControllerBase
 {
     [HttpGet]
-    public async Task<ActionResult<IEnumerable<UserGroupResponse>>> GetUserGroups()
+    public async Task<ActionResult<IEnumerable<UserGroupResponse>>> GetUserGroups(CancellationToken cancellationToken)
     {
-        return Ok(await BuildQuery().ToListAsync());
+        return Ok(await BuildQuery().ToListAsync(cancellationToken));
     }
 
     [HttpGet("{id}")]
-    public async Task<ActionResult<UserGroupResponse>> GetUserGroup(int id)
+    public async Task<ActionResult<UserGroupResponse>> GetUserGroup(int id, CancellationToken cancellationToken)
     {
-        var userGroup = await BuildQuery().FirstOrDefaultAsync(link => link.Id == id);
+        var userGroup = await BuildQuery().FirstOrDefaultAsync(link => link.Id == id, cancellationToken);
         return userGroup is null ? NotFound() : Ok(userGroup);
     }
 
     [HttpGet("user/{userId}")]
-    public async Task<ActionResult<IEnumerable<UserGroupResponse>>> GetUserGroupsByUser(int userId)
+    public async Task<ActionResult<IEnumerable<UserGroupResponse>>> GetUserGroupsByUser(int userId, CancellationToken cancellationToken)
     {
-        if (!await context.Users.AnyAsync(user => user.Id == userId))
+        if (!await context.Users.AnyAsync(user => user.Id == userId, cancellationToken))
         {
             return NotFound($"User with id {userId} was not found.");
         }
 
         return Ok(await BuildQuery()
             .Where(link => link.UserId == userId)
-            .ToListAsync());
+            .ToListAsync(cancellationToken));
     }
 
     [HttpGet("group/{groupId}")]
-    public async Task<ActionResult<IEnumerable<UserGroupResponse>>> GetUserGroupsByGroup(int groupId)
+    public async Task<ActionResult<IEnumerable<UserGroupResponse>>> GetUserGroupsByGroup(int groupId, CancellationToken cancellationToken)
     {
-        if (!await context.Groups.AnyAsync(group => group.Id == groupId))
+        if (!await context.Groups.AnyAsync(group => group.Id == groupId, cancellationToken))
         {
             return NotFound($"Group with id {groupId} was not found.");
         }
 
         return Ok(await BuildQuery()
             .Where(link => link.GroupId == groupId)
-            .ToListAsync());
+            .ToListAsync(cancellationToken));
     }
 
+    [Authorize]
     [HttpPost]
-    public async Task<ActionResult<UserGroupResponse>> PostUserGroup(UserGroup userGroup)
+    public async Task<ActionResult<UserGroupResponse>> PostUserGroup(UserGroup userGroup, CancellationToken cancellationToken)
     {
         if (userGroup.UserId <= 0 || userGroup.GroupId <= 0)
         {
             return BadRequest("UserId and GroupId are required.");
         }
 
-        if (!await context.Users.AnyAsync(user => user.Id == userGroup.UserId))
+        if (!await IsCurrentUserMemberOfGroupAsync(userGroup.GroupId, cancellationToken))
+        {
+            return Forbid();
+        }
+
+        if (!await context.Users.AnyAsync(user => user.Id == userGroup.UserId, cancellationToken))
         {
             return BadRequest($"User with id {userGroup.UserId} was not found.");
         }
 
-        if (!await context.Groups.AnyAsync(group => group.Id == userGroup.GroupId))
+        if (!await context.Groups.AnyAsync(group => group.Id == userGroup.GroupId, cancellationToken))
         {
             return BadRequest($"Group with id {userGroup.GroupId} was not found.");
         }
 
         var alreadyExists = await context.UserGroups.AnyAsync(link =>
-            link.UserId == userGroup.UserId && link.GroupId == userGroup.GroupId);
+            link.UserId == userGroup.UserId && link.GroupId == userGroup.GroupId,
+            cancellationToken);
         if (alreadyExists)
         {
             return Conflict("This user is already connected to this group.");
@@ -79,23 +88,32 @@ public class UserGroupController(DatabaseContext context) : ControllerBase
         };
 
         context.UserGroups.Add(link);
-        await context.SaveChangesAsync();
+        await context.SaveChangesAsync(cancellationToken);
 
-        var created = await BuildQuery().FirstAsync(item => item.Id == link.Id);
+        var created = await BuildQuery().FirstAsync(item => item.Id == link.Id, cancellationToken);
         return CreatedAtAction(nameof(GetUserGroup), new { id = link.Id }, created);
     }
 
+    [Authorize]
     [HttpDelete("{id}")]
-    public async Task<IActionResult> DeleteUserGroup(int id)
+    public async Task<IActionResult> DeleteUserGroup(int id, CancellationToken cancellationToken)
     {
-        var userGroup = await context.UserGroups.FindAsync(id);
+        var userGroup = await context.UserGroups.FirstOrDefaultAsync(link => link.Id == id, cancellationToken);
         if (userGroup == null)
         {
             return NotFound();
         }
 
+        var currentUserId = User.GetCurrentUserId();
+        var canRemove = currentUserId == userGroup.UserId ||
+            await IsCurrentUserMemberOfGroupAsync(userGroup.GroupId, cancellationToken);
+        if (!canRemove)
+        {
+            return Forbid();
+        }
+
         context.UserGroups.Remove(userGroup);
-        await context.SaveChangesAsync();
+        await context.SaveChangesAsync(cancellationToken);
 
         return NoContent();
     }
@@ -112,6 +130,14 @@ public class UserGroupController(DatabaseContext context) : ControllerBase
                 link.GroupId,
                 link.Group!.Name,
                 link.Group.Description));
+    }
+
+    private async Task<bool> IsCurrentUserMemberOfGroupAsync(int groupId, CancellationToken cancellationToken)
+    {
+        var currentUserId = User.GetCurrentUserId();
+        return currentUserId.HasValue && await context.UserGroups.AnyAsync(
+            link => link.UserId == currentUserId.Value && link.GroupId == groupId,
+            cancellationToken);
     }
 
     public sealed record UserGroupResponse(

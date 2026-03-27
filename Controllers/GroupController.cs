@@ -1,102 +1,110 @@
+﻿using FoodyBackend.Auth;
+using FoodyBackend.Models;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
-using FoodyBackend.Models;
 
-namespace FoodyBackend.Controllers
+namespace FoodyBackend.Controllers;
+
+[Route("api/[controller]")]
+[ApiController]
+public class GroupController(DatabaseContext context) : ControllerBase
 {
-    [Route("api/[controller]")]
-    [ApiController]
-    public class GroupController : ControllerBase
+    [HttpGet]
+    public async Task<ActionResult<IEnumerable<Group>>> GetGroups(CancellationToken cancellationToken)
     {
-        private readonly DatabaseContext _context;
+        return Ok(await context.Groups
+            .AsNoTracking()
+            .OrderBy(group => group.Id)
+            .ToListAsync(cancellationToken));
+    }
 
-        public GroupController(DatabaseContext context)
+    [HttpGet("{id}")]
+    public async Task<ActionResult<Group>> GetGroup(int id, CancellationToken cancellationToken)
+    {
+        var group = await context.Groups
+            .AsNoTracking()
+            .FirstOrDefaultAsync(item => item.Id == id, cancellationToken);
+
+        return group is null ? NotFound() : Ok(group);
+    }
+
+    [Authorize]
+    [HttpPut("{id}")]
+    public async Task<IActionResult> PutGroup(int id, Group group, CancellationToken cancellationToken)
+    {
+        if (id != group.Id)
         {
-            _context = context;
+            return BadRequest();
         }
 
-        // GET: api/Group
-        [HttpGet]
-        public async Task<ActionResult<IEnumerable<Group>>> GetGroups()
+        var existingGroup = await context.Groups.FindAsync([id], cancellationToken);
+        if (existingGroup is null)
         {
-            return await _context.Groups.ToListAsync();
+            return NotFound();
         }
 
-        // GET: api/Group/5
-        [HttpGet("{id}")]
-        public async Task<ActionResult<Group>> GetGroup(int id)
+        if (!await IsCurrentUserMemberOfGroupAsync(id, cancellationToken))
         {
-            var group = await _context.Groups.FindAsync(id);
-
-            if (group == null)
-            {
-                return NotFound();
-            }
-
-            return group;
+            return Forbid();
         }
 
-        // PUT: api/Group/5
-        // To protect from overposting attacks, see https://go.microsoft.com/fwlink/?linkid=2123754
-        [HttpPut("{id}")]
-        public async Task<IActionResult> PutGroup(int id, Group group)
+        existingGroup.Name = group.Name;
+        existingGroup.Description = group.Description;
+
+        await context.SaveChangesAsync(cancellationToken);
+        return NoContent();
+    }
+
+    [Authorize]
+    [HttpPost]
+    public async Task<ActionResult<Group>> PostGroup(Group group, CancellationToken cancellationToken)
+    {
+        var currentUserId = User.GetCurrentUserId();
+        if (!currentUserId.HasValue)
         {
-            if (id != group.Id)
-            {
-                return BadRequest();
-            }
-
-            _context.Entry(group).State = EntityState.Modified;
-
-            try
-            {
-                await _context.SaveChangesAsync();
-            }
-            catch (DbUpdateConcurrencyException)
-            {
-                if (!GroupExists(id))
-                {
-                    return NotFound();
-                }
-                else
-                {
-                    throw;
-                }
-            }
-
-            return NoContent();
+            return Unauthorized();
         }
 
-        // POST: api/Group
-        // To protect from overposting attacks, see https://go.microsoft.com/fwlink/?linkid=2123754
-        [HttpPost]
-        public async Task<ActionResult<Group>> PostGroup(Group group)
-        {
-            _context.Groups.Add(group);
-            await _context.SaveChangesAsync();
+        context.Groups.Add(group);
+        await context.SaveChangesAsync(cancellationToken);
 
-            return CreatedAtAction("GetGroup", new { id = group.Id }, group);
+        context.UserGroups.Add(new UserGroup
+        {
+            UserId = currentUserId.Value,
+            GroupId = group.Id
+        });
+        await context.SaveChangesAsync(cancellationToken);
+
+        return CreatedAtAction(nameof(GetGroup), new { id = group.Id }, group);
+    }
+
+    [Authorize]
+    [HttpDelete("{id}")]
+    public async Task<IActionResult> DeleteGroup(int id, CancellationToken cancellationToken)
+    {
+        var group = await context.Groups.FindAsync([id], cancellationToken);
+        if (group is null)
+        {
+            return NotFound();
         }
 
-        // DELETE: api/Group/5
-        [HttpDelete("{id}")]
-        public async Task<IActionResult> DeleteGroup(int id)
+        if (!await IsCurrentUserMemberOfGroupAsync(id, cancellationToken))
         {
-            var group = await _context.Groups.FindAsync(id);
-            if (group == null)
-            {
-                return NotFound();
-            }
-
-            _context.Groups.Remove(group);
-            await _context.SaveChangesAsync();
-
-            return NoContent();
+            return Forbid();
         }
 
-        private bool GroupExists(int id)
-        {
-            return _context.Groups.Any(e => e.Id == id);
-        }
+        context.Groups.Remove(group);
+        await context.SaveChangesAsync(cancellationToken);
+
+        return NoContent();
+    }
+
+    private async Task<bool> IsCurrentUserMemberOfGroupAsync(int groupId, CancellationToken cancellationToken)
+    {
+        var currentUserId = User.GetCurrentUserId();
+        return currentUserId.HasValue && await context.UserGroups.AnyAsync(
+            link => link.UserId == currentUserId.Value && link.GroupId == groupId,
+            cancellationToken);
     }
 }

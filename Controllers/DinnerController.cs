@@ -1,130 +1,153 @@
+﻿using FoodyBackend.Auth;
+using FoodyBackend.Models;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
-using FoodyBackend.Models;
 
-namespace FoodyBackend.Controllers
+namespace FoodyBackend.Controllers;
+
+[Route("api/[controller]")]
+[ApiController]
+public class DinnerController(DatabaseContext context) : ControllerBase
 {
-    [Route("api/[controller]")]
-    [ApiController]
-    public class DinnerController : ControllerBase
+    [HttpGet]
+    public async Task<ActionResult<IEnumerable<Dinner>>> GetDinners(CancellationToken cancellationToken)
     {
-        private readonly DatabaseContext _context;
+        return Ok(await context.Dinners
+            .AsNoTracking()
+            .Include(dinner => dinner.Group)
+            .OrderBy(dinner => dinner.Id)
+            .ToListAsync(cancellationToken));
+    }
 
-        public DinnerController(DatabaseContext context)
+    [HttpGet("{id}")]
+    public async Task<ActionResult<Dinner>> GetDinner(int id, CancellationToken cancellationToken)
+    {
+        var dinner = await context.Dinners
+            .AsNoTracking()
+            .Include(item => item.Group)
+            .FirstOrDefaultAsync(item => item.Id == id, cancellationToken);
+
+        return dinner is null ? NotFound() : Ok(dinner);
+    }
+
+    [Authorize]
+    [HttpPut("{id}")]
+    public async Task<IActionResult> PutDinner(int id, Dinner dinner, CancellationToken cancellationToken)
+    {
+        if (id != dinner.Id)
         {
-            _context = context;
+            return BadRequest();
         }
 
-        // GET: api/Dinner
-        [HttpGet]
-        public async Task<ActionResult<IEnumerable<Dinner>>> GetDinners()
+        var existingDinner = await context.Dinners.FirstOrDefaultAsync(
+            item => item.Id == id,
+            cancellationToken);
+        if (existingDinner is null)
         {
-            return await _context.Dinners
-                .Include(d => d.Group)
-                .ToListAsync();
+            return NotFound();
         }
 
-        // GET: api/Dinner/5
-        [HttpGet("{id}")]
-        public async Task<ActionResult<Dinner>> GetDinner(int id)
+        var targetGroupId = ResolveGroupId(dinner);
+        if (targetGroupId <= 0)
         {
-            var dinner = await _context.Dinners
-                .Include(d => d.Group)
-                .FirstOrDefaultAsync(m => m.Id == id);
-
-            if (dinner == null)
-            {
-                return NotFound();
-            }
-
-            return dinner;
+            return BadRequest("GroupId is required.");
         }
 
-        // PUT: api/Dinner/5
-        // To protect from overposting attacks, see https://go.microsoft.com/fwlink/?linkid=2123754
-        [HttpPut("{id}")]
-        public async Task<IActionResult> PutDinner(int id, Dinner dinner)
+        if (!await context.Groups.AnyAsync(group => group.Id == targetGroupId, cancellationToken))
         {
-            if (id != dinner.Id)
-            {
-                return BadRequest();
-            }
-
-            if (dinner.GroupId == 0 && dinner.Group?.Id > 0)
-            {
-                dinner.GroupId = dinner.Group.Id;
-            }
-
-            if (!await _context.Groups.AnyAsync(group => group.Id == dinner.GroupId))
-            {
-                return BadRequest($"Group with id {dinner.GroupId} was not found.");
-            }
-
-            dinner.Group = null;
-
-            _context.Entry(dinner).State = EntityState.Modified;
-
-            try
-            {
-                await _context.SaveChangesAsync();
-            }
-            catch (DbUpdateConcurrencyException)
-            {
-                if (!DinnerExists(id))
-                {
-                    return NotFound();
-                }
-                else
-                {
-                    throw;
-                }
-            }
-
-            return NoContent();
+            return BadRequest($"Group with id {targetGroupId} was not found.");
         }
 
-        // POST: api/Dinner
-        // To protect from overposting attacks, see https://go.microsoft.com/fwlink/?linkid=2123754
-        [HttpPost]
-        public async Task<ActionResult<Dinner>> PostDinner(Dinner dinner)
+        var canEditExistingGroup = await IsCurrentUserMemberOfGroupAsync(existingDinner.GroupId, cancellationToken);
+        var canEditTargetGroup = await IsCurrentUserMemberOfGroupAsync(targetGroupId, cancellationToken);
+        if (!canEditExistingGroup || !canEditTargetGroup)
         {
-            if (dinner.GroupId == 0 && dinner.Group?.Id > 0)
-            {
-                dinner.GroupId = dinner.Group.Id;
-            }
-
-            var existingGroup = await _context.Groups.FindAsync(dinner.GroupId);
-            if (existingGroup == null)
-            {
-                return BadRequest($"Group with id {dinner.GroupId} was not found.");
-            }
-
-            dinner.Group = existingGroup;
-            _context.Dinners.Add(dinner);
-            await _context.SaveChangesAsync();
-
-            return CreatedAtAction("GetDinner", new { id = dinner.Id }, dinner);
+            return Forbid();
         }
 
-        // DELETE: api/Dinner/5
-        [HttpDelete("{id}")]
-        public async Task<IActionResult> DeleteDinner(int id)
+        existingDinner.GroupId = targetGroupId;
+        existingDinner.Description = dinner.Description;
+        existingDinner.Date = dinner.Date;
+
+        await context.SaveChangesAsync(cancellationToken);
+        return NoContent();
+    }
+
+    [Authorize]
+    [HttpPost]
+    public async Task<ActionResult<Dinner>> PostDinner(Dinner dinner, CancellationToken cancellationToken)
+    {
+        var groupId = ResolveGroupId(dinner);
+        if (groupId <= 0)
         {
-            var dinner = await _context.Dinners.FindAsync(id);
-            if (dinner == null)
-            {
-                return NotFound();
-            }
-
-            _context.Dinners.Remove(dinner);
-            await _context.SaveChangesAsync();
-
-            return NoContent();
+            return BadRequest("GroupId is required.");
         }
 
-        private bool DinnerExists(int id)
+        if (!await context.Groups.AnyAsync(group => group.Id == groupId, cancellationToken))
         {
-            return _context.Dinners.Any(e => e.Id == id);
+            return BadRequest($"Group with id {groupId} was not found.");
         }
+
+        if (!await IsCurrentUserMemberOfGroupAsync(groupId, cancellationToken))
+        {
+            return Forbid();
+        }
+
+        var newDinner = new Dinner
+        {
+            GroupId = groupId,
+            Description = dinner.Description,
+            Date = dinner.Date
+        };
+
+        context.Dinners.Add(newDinner);
+        await context.SaveChangesAsync(cancellationToken);
+
+        var createdDinner = await context.Dinners
+            .AsNoTracking()
+            .Include(item => item.Group)
+            .FirstAsync(item => item.Id == newDinner.Id, cancellationToken);
+
+        return CreatedAtAction(nameof(GetDinner), new { id = newDinner.Id }, createdDinner);
+    }
+
+    [Authorize]
+    [HttpDelete("{id}")]
+    public async Task<IActionResult> DeleteDinner(int id, CancellationToken cancellationToken)
+    {
+        var dinner = await context.Dinners.FirstOrDefaultAsync(item => item.Id == id, cancellationToken);
+        if (dinner is null)
+        {
+            return NotFound();
+        }
+
+        if (!await IsCurrentUserMemberOfGroupAsync(dinner.GroupId, cancellationToken))
+        {
+            return Forbid();
+        }
+
+        context.Dinners.Remove(dinner);
+        await context.SaveChangesAsync(cancellationToken);
+
+        return NoContent();
+    }
+
+    private async Task<bool> IsCurrentUserMemberOfGroupAsync(int groupId, CancellationToken cancellationToken)
+    {
+        var currentUserId = User.GetCurrentUserId();
+        return currentUserId.HasValue && await context.UserGroups.AnyAsync(
+            link => link.UserId == currentUserId.Value && link.GroupId == groupId,
+            cancellationToken);
+    }
+
+    private static int ResolveGroupId(Dinner dinner)
+    {
+        if (dinner.GroupId > 0)
+        {
+            return dinner.GroupId;
+        }
+
+        return dinner.Group?.Id ?? 0;
     }
 }

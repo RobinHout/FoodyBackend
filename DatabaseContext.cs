@@ -6,6 +6,7 @@ namespace FoodyBackend;
 public class DatabaseContext(DbContextOptions<DatabaseContext> options) : DbContext(options)
 {
     public DbSet<User> Users => Set<User>();
+    public DbSet<AuthSession> AuthSessions => Set<AuthSession>();
     public DbSet<Group> Groups => Set<Group>();
     public DbSet<Dinner> Dinners => Set<Dinner>();
     public DbSet<Recipe> Recipes => Set<Recipe>();
@@ -23,6 +24,20 @@ public class DatabaseContext(DbContextOptions<DatabaseContext> options) : DbCont
             .HasOne(dinner => dinner.Group)
             .WithMany()
             .HasForeignKey(dinner => dinner.GroupId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        modelBuilder.Entity<AuthSession>()
+            .HasIndex(session => session.AccessTokenHash)
+            .IsUnique();
+
+        modelBuilder.Entity<AuthSession>()
+            .HasIndex(session => session.RefreshTokenHash)
+            .IsUnique();
+
+        modelBuilder.Entity<AuthSession>()
+            .HasOne(session => session.User)
+            .WithMany()
+            .HasForeignKey(session => session.UserId)
             .OnDelete(DeleteBehavior.Cascade);
 
         modelBuilder.Entity<Answers>()

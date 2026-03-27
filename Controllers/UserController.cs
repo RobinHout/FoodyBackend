@@ -1,102 +1,163 @@
+﻿using FoodyBackend.Auth;
+using FoodyBackend.Contracts;
+using FoodyBackend.Models;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
-using FoodyBackend.Models;
 
-namespace FoodyBackend.Controllers
+namespace FoodyBackend.Controllers;
+
+[Route("api/[controller]")]
+[ApiController]
+public class UserController(
+    DatabaseContext context,
+    IPasswordHasher<User> passwordHasher) : ControllerBase
 {
-    [Route("api/[controller]")]
-    [ApiController]
-    public class UserController : ControllerBase
+    [HttpGet]
+    public async Task<ActionResult<IEnumerable<UserResponse>>> GetUsers(CancellationToken cancellationToken)
     {
-        private readonly DatabaseContext _context;
+        var users = await context.Users
+            .AsNoTracking()
+            .OrderBy(user => user.Id)
+            .Select(user => new UserResponse(user.Id, user.Username))
+            .ToListAsync(cancellationToken);
 
-        public UserController(DatabaseContext context)
+        return Ok(users);
+    }
+
+    [HttpGet("{id}")]
+    public async Task<ActionResult<UserResponse>> GetUser(int id, CancellationToken cancellationToken)
+    {
+        var user = await context.Users
+            .AsNoTracking()
+            .Where(item => item.Id == id)
+            .Select(item => new UserResponse(item.Id, item.Username))
+            .FirstOrDefaultAsync(cancellationToken);
+
+        return user is null ? NotFound() : Ok(user);
+    }
+
+    [Authorize]
+    [HttpPut("{id}")]
+    public async Task<IActionResult> PutUser(
+        int id,
+        UpdateUserRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (id != request.Id)
         {
-            _context = context;
+            return BadRequest();
         }
 
-        // GET: api/User
-        [HttpGet]
-        public async Task<ActionResult<IEnumerable<User>>> GetUsers()
+        var currentUserId = User.GetCurrentUserId();
+        if (currentUserId != id)
         {
-            return await _context.Users.ToListAsync();
+            return Forbid();
         }
 
-        // GET: api/User/5
-        [HttpGet("{id}")]
-        public async Task<ActionResult<User>> GetUser(int id)
+        var validationError = ValidateUsername(request.Username);
+        if (validationError is not null)
         {
-            var user = await _context.Users.FindAsync(id);
-
-            if (user == null)
-            {
-                return NotFound();
-            }
-
-            return user;
+            return BadRequest(validationError);
         }
 
-        // PUT: api/User/5
-        // To protect from overposting attacks, see https://go.microsoft.com/fwlink/?linkid=2123754
-        [HttpPut("{id}")]
-        public async Task<IActionResult> PutUser(int id, User user)
+        var user = await context.Users.FindAsync([id], cancellationToken);
+        if (user is null)
         {
-            if (id != user.Id)
-            {
-                return BadRequest();
-            }
-
-            _context.Entry(user).State = EntityState.Modified;
-
-            try
-            {
-                await _context.SaveChangesAsync();
-            }
-            catch (DbUpdateConcurrencyException)
-            {
-                if (!UserExists(id))
-                {
-                    return NotFound();
-                }
-                else
-                {
-                    throw;
-                }
-            }
-
-            return NoContent();
+            return NotFound();
         }
 
-        // POST: api/User
-        // To protect from overposting attacks, see https://go.microsoft.com/fwlink/?linkid=2123754
-        [HttpPost]
-        public async Task<ActionResult<User>> PostUser(User user)
+        var username = request.Username.Trim();
+        var usernameInUse = await context.Users.AnyAsync(
+            item => item.Id != id && item.Username == username,
+            cancellationToken);
+        if (usernameInUse)
         {
-            _context.Users.Add(user);
-            await _context.SaveChangesAsync();
-
-            return CreatedAtAction("GetUser", new { id = user.Id }, user);
+            return Conflict("A user with this username already exists.");
         }
 
-        // DELETE: api/User/5
-        [HttpDelete("{id}")]
-        public async Task<IActionResult> DeleteUser(int id)
+        user.Username = username;
+        if (!string.IsNullOrWhiteSpace(request.Password))
         {
-            var user = await _context.Users.FindAsync(id);
-            if (user == null)
-            {
-                return NotFound();
-            }
-
-            _context.Users.Remove(user);
-            await _context.SaveChangesAsync();
-
-            return NoContent();
+            user.PasswordHash = passwordHasher.HashPassword(user, request.Password);
         }
 
-        private bool UserExists(int id)
+        await context.SaveChangesAsync(cancellationToken);
+        return NoContent();
+    }
+
+    [HttpPost]
+    public async Task<ActionResult<UserResponse>> PostUser(
+        CreateUserRequest request,
+        CancellationToken cancellationToken)
+    {
+        var validationError = ValidateCredentials(request.Username, request.Password);
+        if (validationError is not null)
         {
-            return _context.Users.Any(e => e.Id == id);
+            return BadRequest(validationError);
         }
+
+        var username = request.Username.Trim();
+        var alreadyExists = await context.Users.AnyAsync(
+            user => user.Username == username,
+            cancellationToken);
+        if (alreadyExists)
+        {
+            return Conflict("A user with this username already exists.");
+        }
+
+        var user = new User
+        {
+            Username = username
+        };
+        user.PasswordHash = passwordHasher.HashPassword(user, request.Password);
+
+        context.Users.Add(user);
+        await context.SaveChangesAsync(cancellationToken);
+
+        return CreatedAtAction(nameof(GetUser), new { id = user.Id }, user.ToResponse());
+    }
+
+    [Authorize]
+    [HttpDelete("{id}")]
+    public async Task<IActionResult> DeleteUser(int id, CancellationToken cancellationToken)
+    {
+        var currentUserId = User.GetCurrentUserId();
+        if (currentUserId != id)
+        {
+            return Forbid();
+        }
+
+        var user = await context.Users.FindAsync([id], cancellationToken);
+        if (user is null)
+        {
+            return NotFound();
+        }
+
+        context.Users.Remove(user);
+        await context.SaveChangesAsync(cancellationToken);
+
+        return NoContent();
+    }
+
+    private static string? ValidateUsername(string username)
+    {
+        return string.IsNullOrWhiteSpace(username)
+            ? "Username is required."
+            : null;
+    }
+
+    private static string? ValidateCredentials(string username, string password)
+    {
+        var usernameError = ValidateUsername(username);
+        if (usernameError is not null)
+        {
+            return usernameError;
+        }
+
+        return string.IsNullOrWhiteSpace(password)
+            ? "Password is required."
+            : null;
     }
 }
