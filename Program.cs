@@ -33,7 +33,8 @@ if (string.IsNullOrWhiteSpace(connectionStringBuilder.Host) ||
 }
 
 var allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>() ??
-    ["http://localhost:3000", "https://robinhout.github.io"];
+    ["http://localhost:3000", "https://robinhout.github.io", "https://foodyweb-production-7c4b.up.railway.app"];
+var allowedOriginSet = new HashSet<string>(allowedOrigins, StringComparer.OrdinalIgnoreCase);
 
 builder.Services.AddCors(options =>
 {
@@ -47,7 +48,7 @@ builder.Services.AddCors(options =>
             return;
         }
 
-        corsBuilder.WithOrigins(allowedOrigins)
+        corsBuilder.SetIsOriginAllowed(origin => IsAllowedOrigin(origin, allowedOriginSet))
             .AllowAnyMethod()
             .AllowAnyHeader()
             .AllowCredentials();
@@ -172,4 +173,21 @@ static string TryConvertDatabaseUrl(string databaseUrl)
     }
 
     return builder.ConnectionString;
+}
+
+static bool IsAllowedOrigin(string origin, ISet<string> allowedOrigins)
+{
+    if (allowedOrigins.Contains(origin))
+    {
+        return true;
+    }
+
+    if (!Uri.TryCreate(origin, UriKind.Absolute, out var uri))
+    {
+        return false;
+    }
+
+    return string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) &&
+        uri.Host.StartsWith("foodyweb-", StringComparison.OrdinalIgnoreCase) &&
+        uri.Host.EndsWith(".up.railway.app", StringComparison.OrdinalIgnoreCase);
 }
