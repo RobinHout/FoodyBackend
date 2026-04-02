@@ -13,13 +13,16 @@ public class UserGroupController(DatabaseContext context) : ControllerBase
     [HttpGet]
     public async Task<ActionResult<IEnumerable<UserGroupResponse>>> GetUserGroups(CancellationToken cancellationToken)
     {
-        return Ok(await BuildQuery().ToListAsync(cancellationToken));
+        return Ok(await BuildQuery(context.UserGroups)
+            .ToListAsync(cancellationToken));
     }
 
     [HttpGet("{id}")]
     public async Task<ActionResult<UserGroupResponse>> GetUserGroup(int id, CancellationToken cancellationToken)
     {
-        var userGroup = await BuildQuery().FirstOrDefaultAsync(link => link.Id == id, cancellationToken);
+        var userGroup = await BuildQuery(context.UserGroups
+                .Where(link => link.Id == id))
+            .FirstOrDefaultAsync(cancellationToken);
         return userGroup is null ? NotFound() : Ok(userGroup);
     }
 
@@ -31,8 +34,8 @@ public class UserGroupController(DatabaseContext context) : ControllerBase
             return NotFound($"User with id {userId} was not found.");
         }
 
-        return Ok(await BuildQuery()
-            .Where(link => link.UserId == userId)
+        return Ok(await BuildQuery(context.UserGroups
+            .Where(link => link.UserId == userId))
             .ToListAsync(cancellationToken));
     }
 
@@ -44,8 +47,8 @@ public class UserGroupController(DatabaseContext context) : ControllerBase
             return NotFound($"Group with id {groupId} was not found.");
         }
 
-        return Ok(await BuildQuery()
-            .Where(link => link.GroupId == groupId)
+        return Ok(await BuildQuery(context.UserGroups
+            .Where(link => link.GroupId == groupId))
             .ToListAsync(cancellationToken));
     }
 
@@ -90,7 +93,9 @@ public class UserGroupController(DatabaseContext context) : ControllerBase
         context.UserGroups.Add(link);
         await context.SaveChangesAsync(cancellationToken);
 
-        var created = await BuildQuery().FirstAsync(item => item.Id == link.Id, cancellationToken);
+        var created = await BuildQuery(context.UserGroups
+                .Where(item => item.Id == link.Id))
+            .FirstAsync(cancellationToken);
         return CreatedAtAction(nameof(GetUserGroup), new { id = link.Id }, created);
     }
 
@@ -118,9 +123,9 @@ public class UserGroupController(DatabaseContext context) : ControllerBase
         return NoContent();
     }
 
-    private IQueryable<UserGroupResponse> BuildQuery()
+    private IQueryable<UserGroupResponse> BuildQuery(IQueryable<UserGroup> source)
     {
-        return context.UserGroups
+        return source
             .AsNoTracking()
             .OrderBy(link => link.Id)
             .Select(link => new UserGroupResponse(
