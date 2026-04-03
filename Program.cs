@@ -32,17 +32,13 @@ if (string.IsNullOrWhiteSpace(connectionStringBuilder.Host) ||
         "The PostgreSQL connection string must include Host, Database, Username, and Password.");
 }
 
-var allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>() ??
-    ["https://foodyweb-production-7c4b.up.railway.app"];
-
 builder.Services.AddCors(options =>
 {
     options.AddDefaultPolicy(corsBuilder =>
     {
-        corsBuilder.WithOrigins(allowedOrigins)
+        corsBuilder.AllowAnyOrigin()
             .AllowAnyMethod()
-            .AllowAnyHeader()
-            .AllowCredentials();
+            .AllowAnyHeader();
     });
 });
 
