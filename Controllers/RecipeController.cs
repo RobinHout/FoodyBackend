@@ -1,3 +1,4 @@
+using System.Text.Json;
 using FoodyBackend.Models;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -12,6 +13,12 @@ public class RecipeController(
     IConfiguration configuration,
     IWebHostEnvironment environment) : ControllerBase
 {
+    private const int ImportBatchSize = 250;
+    private static readonly JsonSerializerOptions ImportJsonSerializerOptions = new()
+    {
+        PropertyNameCaseInsensitive = true
+    };
+
     private readonly string _csvPath = ResolveCsvPath(
         configuration["Database:RecipesCsvPath"] ?? "Data/foodnetwork_recipes.csv",
         environment.ContentRootPath);
@@ -184,6 +191,155 @@ public class RecipeController(
         });
     }
 
+    [HttpPost("import-json")]
+    [Consumes("multipart/form-data")]
+    public async Task<IActionResult> ImportRecipesFromJson(
+        [FromForm] IFormFile? file,
+        [FromQuery] int? limit,
+        CancellationToken cancellationToken)
+    {
+        if (limit is <= 0)
+        {
+            return BadRequest("Limit must be greater than 0 when it is provided.");
+        }
+
+        if (file is null || file.Length == 0)
+        {
+            return BadRequest("A JSON file is required.");
+        }
+
+        List<ImportedRecipe> importedRecipes;
+        try
+        {
+            importedRecipes = await ParseImportedRecipesAsync(file, cancellationToken);
+        }
+        catch (JsonException exception)
+        {
+            return BadRequest($"Invalid JSON file: {exception.Message}");
+        }
+
+        if (importedRecipes.Count == 0)
+        {
+            return BadRequest("The uploaded JSON file does not contain any recipes.");
+        }
+
+        var labelRows = await context.Labels
+            .AsNoTracking()
+            .ToListAsync(cancellationToken);
+        var labelIdsByName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        foreach (var label in labelRows)
+        {
+            var key = NormalizeLabelKey(label.Name);
+            if (string.IsNullOrWhiteSpace(key) || labelIdsByName.ContainsKey(key))
+            {
+                continue;
+            }
+
+            labelIdsByName[key] = label.Id;
+        }
+
+        var pendingLabelsByName = new Dictionary<string, Label>(StringComparer.OrdinalIgnoreCase);
+        var imported = 0;
+        var skipped = 0;
+        var labelsCreated = 0;
+        var recipeLabelsCreated = 0;
+        var batchCount = 0;
+
+        foreach (var importedRecipe in importedRecipes.Take(limit ?? int.MaxValue))
+        {
+            var title = importedRecipe.Title?.Trim();
+            if (string.IsNullOrWhiteSpace(title))
+            {
+                skipped++;
+                continue;
+            }
+
+            var ingredientItems = NormalizeList(importedRecipe.Ingredients);
+            var directionSteps = NormalizeList(importedRecipe.Directions);
+            var nerItems = NormalizeList(importedRecipe.Ner);
+
+            var recipe = new Recipe
+            {
+                Title = title,
+                Ingredients = FlattenIngredients(ingredientItems),
+                IngredientItems = ingredientItems.ToArray(),
+                Directions = FlattenDirections(directionSteps),
+                DirectionSteps = directionSteps.ToArray(),
+                Ner = nerItems.ToArray(),
+                Link = NormalizeLink(importedRecipe.Link),
+                Source = NormalizeValue(importedRecipe.Source)
+            };
+
+            context.Recipes.Add(recipe);
+
+            foreach (var labelName in NormalizeLabels(importedRecipe.Labels))
+            {
+                var labelKey = NormalizeLabelKey(labelName);
+                if (labelIdsByName.TryGetValue(labelKey, out var existingLabelId))
+                {
+                    context.RecipeLabels.Add(new RecipeLabel
+                    {
+                        Recipe = recipe,
+                        LabelId = existingLabelId
+                    });
+                }
+                else if (pendingLabelsByName.TryGetValue(labelKey, out var pendingLabel))
+                {
+                    context.RecipeLabels.Add(new RecipeLabel
+                    {
+                        Recipe = recipe,
+                        Label = pendingLabel
+                    });
+                }
+                else
+                {
+                    var newLabel = new Label
+                    {
+                        Name = labelName,
+                        Description = string.Empty
+                    };
+
+                    context.Labels.Add(newLabel);
+                    pendingLabelsByName[labelKey] = newLabel;
+                    labelsCreated++;
+
+                    context.RecipeLabels.Add(new RecipeLabel
+                    {
+                        Recipe = recipe,
+                        Label = newLabel
+                    });
+                }
+
+                recipeLabelsCreated++;
+            }
+
+            imported++;
+            batchCount++;
+
+            if (batchCount < ImportBatchSize)
+            {
+                continue;
+            }
+
+            await SaveImportBatchAsync(labelIdsByName, pendingLabelsByName, cancellationToken);
+            batchCount = 0;
+        }
+
+        if (batchCount > 0)
+        {
+            await SaveImportBatchAsync(labelIdsByName, pendingLabelsByName, cancellationToken);
+        }
+
+        return Ok(new
+        {
+            imported,
+            skipped,
+            labelsCreated,
+            recipeLabelsCreated,
+            source = file.FileName
+        });
+    }
+
     private async Task<Recipe?> GetRandomDatabaseRecipeAsync(CancellationToken cancellationToken)
     {
         var totalRecipes = await context.Recipes.CountAsync(cancellationToken);
@@ -309,13 +465,63 @@ public class RecipeController(
 
         return null;
     }
+
+    private async Task SaveImportBatchAsync(
+        IDictionary<string, int> labelIdsByName,
+        IDictionary<string, Label> pendingLabelsByName,
+        CancellationToken cancellationToken)
+    {
+        await context.SaveChangesAsync(cancellationToken);
+
+        foreach (var pendingLabel in pendingLabelsByName)
+        {
+            labelIdsByName[pendingLabel.Key] = pendingLabel.Value.Id;
+        }
+
+        pendingLabelsByName.Clear();
+        context.ChangeTracker.Clear();
+    }
+
+    private static async Task<List<ImportedRecipe>> ParseImportedRecipesAsync(
+        IFormFile file,
+        CancellationToken cancellationToken)
+    {
+        await using var stream = file.OpenReadStream();
+        using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+
+        JsonElement? recipesElement = null;
+        if (document.RootElement.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var property in document.RootElement.EnumerateObject())
+            {
+                if (string.Equals(property.Name, "recipes", StringComparison.OrdinalIgnoreCase))
+                {
+                    recipesElement = property.Value;
+                    break;
+                }
+            }
+        }
+
+        return document.RootElement.ValueKind switch
+        {
+            JsonValueKind.Array => document.RootElement.Deserialize<List<ImportedRecipe>>(ImportJsonSerializerOptions) ?? [],
+            JsonValueKind.Object when recipesElement.HasValue && recipesElement.Value.ValueKind == JsonValueKind.Array =>
+                recipesElement.Value.Deserialize<List<ImportedRecipe>>(ImportJsonSerializerOptions) ?? [],
+            _ => throw new JsonException("Expected a JSON array or an object with a 'recipes' array.")
+        };
+    }
+
     private static object ToRecipeDetails(Recipe recipe)
     {
         return new
         {
             recipe = recipe.Title,
-            ingredients = recipe.Ingredients,
-            directions = recipe.Directions,
+            ingredients = string.IsNullOrWhiteSpace(recipe.Ingredients)
+                ? FlattenIngredients(recipe.IngredientItems)
+                : recipe.Ingredients,
+            directions = string.IsNullOrWhiteSpace(recipe.Directions)
+                ? FlattenDirections(recipe.DirectionSteps)
+                : recipe.Directions,
             link = NormalizeLink(recipe.Link),
             source = recipe.Source,
             data = (string?)null
@@ -354,6 +560,67 @@ public class RecipeController(
             : Path.GetFullPath(Path.Combine(contentRootPath, configuredPath));
     }
 
+    private static List<string> NormalizeList(IEnumerable<string>? values)
+    {
+        if (values is null)
+        {
+            return [];
+        }
+
+        return values
+            .Select(value => value?.Trim())
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value!)
+            .ToList();
+    }
+
+    private static List<string> NormalizeLabels(IEnumerable<string>? values)
+    {
+        if (values is null)
+        {
+            return [];
+        }
+
+        var labels = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var value in values)
+        {
+            var trimmed = value?.Trim();
+            var key = NormalizeLabelKey(trimmed);
+            if (string.IsNullOrWhiteSpace(key) || !seen.Add(key))
+            {
+                continue;
+            }
+
+            labels.Add(trimmed!);
+        }
+
+        return labels;
+    }
+
+    private static string NormalizeLabelKey(string? label)
+    {
+        return string.IsNullOrWhiteSpace(label)
+            ? string.Empty
+            : label.Trim().ToLowerInvariant();
+    }
+
+    private static string NormalizeValue(string? value)
+    {
+        return value?.Trim() ?? string.Empty;
+    }
+
+    private static string FlattenIngredients(IEnumerable<string>? values)
+    {
+        return string.Join(", ", values ?? []);
+    }
+
+    private static string FlattenDirections(IEnumerable<string>? values)
+    {
+        return string.Join(Environment.NewLine, values ?? []);
+    }
+
     private static string NormalizeLink(string? link)
     {
         if (string.IsNullOrWhiteSpace(link))
@@ -365,5 +632,16 @@ public class RecipeController(
                link.StartsWith("https://", StringComparison.OrdinalIgnoreCase)
             ? link
             : $"https://{link}";
+    }
+
+    private sealed class ImportedRecipe
+    {
+        public string? Title { get; init; }
+        public List<string>? Labels { get; init; }
+        public List<string>? Ingredients { get; init; }
+        public List<string>? Directions { get; init; }
+        public List<string>? Ner { get; init; }
+        public string? Link { get; init; }
+        public string? Source { get; init; }
     }
 }
