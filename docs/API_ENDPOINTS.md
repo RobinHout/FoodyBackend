@@ -1,10 +1,11 @@
-﻿# FoodyBackend API Reference
+# FoodyBackend API Reference
 
 ## Update Summary
 
 - Version 1.0, March 22, 2026: first release of the API documentation.
 - Version 1.1, March 22, 2026: added `UserGroup` endpoints so users can now be linked to groups, listed per user or group, and removed again.
 - Version 1.2, March 27, 2026: added session-based authentication with `register`, `login`, `logout`, `refresh-token`, and `me`, started hashing stored passwords, removed passwords from `/api/User` responses, and required authorization for group, dinner, and membership-changing write operations.
+- Version 1.3, April 6, 2026: added public `Label` endpoints to list labels, fetch one label by id, and search labels by name with case-insensitive prefix matching.
 
 ## Overview
 
@@ -167,6 +168,16 @@ Failure response example:
       "description": "Recipes and meals for the family"
     }
   ]
+}
+```
+
+### Label
+
+```json
+{
+  "id": 1,
+  "name": "vegan",
+  "description": ""
 }
 ```
 
@@ -373,6 +384,37 @@ Responses:
 - `401 Unauthorized` if no access token is provided
 - `403 Forbidden` if the token belongs to a different user
 - `404 Not Found`
+
+## Label Endpoints
+
+| Method | Route | Description |
+| --- | --- | --- |
+| GET | `/api/Label` | List all labels sorted by name |
+| GET | `/api/Label/{id}` | Get one label by id |
+| GET | `/api/Label/search?query=value` | Search labels by case-insensitive name prefix |
+
+### GET `/api/Label`
+
+Returns all labels sorted by `Name` ascending.
+
+Responses:
+- `200 OK`
+
+### GET `/api/Label/{id}`
+
+Returns a single label by id.
+
+Responses:
+- `200 OK`
+- `404 Not Found`
+
+### GET `/api/Label/search?query={query}`
+
+Searches `Label.Name` using a case-insensitive prefix match after trimming the query value.
+
+Responses:
+- `200 OK`
+- `400 Bad Request` if `query` is missing or empty
 
 ## Group Endpoints
 
@@ -708,6 +750,12 @@ curl -X POST http://localhost:5066/api/UserGroup \
 
 ```bash
 curl "http://localhost:5066/api/Recipe/by-ingredient?ingredient=tomato"
+```
+
+### Search labels by name prefix
+
+```bash
+curl "http://localhost:5066/api/Label/search?query=veg"
 ```
 
 ### Import CSV recipes

@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Text.Json;
 using FoodyBackend.Models;
 using Microsoft.AspNetCore.Mvc;
@@ -193,7 +194,7 @@ public class RecipeController(
 
     [HttpPost("import-json")]
     [Consumes("multipart/form-data")]
-    public async Task<IActionResult> ImportRecipesFromJson(
+    public IActionResult ImportRecipesFromJson(
         [FromForm] IFormFile? file,
         [FromQuery] int? limit,
         CancellationToken cancellationToken)
@@ -208,24 +209,9 @@ public class RecipeController(
             return BadRequest("A JSON file is required.");
         }
 
-        List<ImportedRecipe> importedRecipes;
-        try
-        {
-            importedRecipes = await ParseImportedRecipesAsync(file, cancellationToken);
-        }
-        catch (JsonException exception)
-        {
-            return BadRequest($"Invalid JSON file: {exception.Message}");
-        }
-
-        if (importedRecipes.Count == 0)
-        {
-            return BadRequest("The uploaded JSON file does not contain any recipes.");
-        }
-
-        var labelRows = await context.Labels
+        var labelRows = context.Labels
             .AsNoTracking()
-            .ToListAsync(cancellationToken);
+            .ToList();
         var labelIdsByName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         foreach (var label in labelRows)
         {
@@ -244,90 +230,104 @@ public class RecipeController(
         var labelsCreated = 0;
         var recipeLabelsCreated = 0;
         var batchCount = 0;
+        var parsedRecipes = 0;
 
-        foreach (var importedRecipe in importedRecipes.Take(limit ?? int.MaxValue))
+        try
         {
-            var title = importedRecipe.Title?.Trim();
-            if (string.IsNullOrWhiteSpace(title))
+            parsedRecipes = ParseImportedRecipes(file, limit, importedRecipe =>
             {
-                skipped++;
-                continue;
-            }
-
-            var ingredientItems = NormalizeList(importedRecipe.Ingredients);
-            var directionSteps = NormalizeList(importedRecipe.Directions);
-            var nerItems = NormalizeList(importedRecipe.Ner);
-
-            var recipe = new Recipe
-            {
-                Title = title,
-                Ingredients = FlattenIngredients(ingredientItems),
-                IngredientItems = ingredientItems.ToArray(),
-                Directions = FlattenDirections(directionSteps),
-                DirectionSteps = directionSteps.ToArray(),
-                Ner = nerItems.ToArray(),
-                Link = NormalizeLink(importedRecipe.Link),
-                Source = NormalizeValue(importedRecipe.Source)
-            };
-
-            context.Recipes.Add(recipe);
-
-            foreach (var labelName in NormalizeLabels(importedRecipe.Labels))
-            {
-                var labelKey = NormalizeLabelKey(labelName);
-                if (labelIdsByName.TryGetValue(labelKey, out var existingLabelId))
+                var title = importedRecipe.Title?.Trim();
+                if (string.IsNullOrWhiteSpace(title))
                 {
-                    context.RecipeLabels.Add(new RecipeLabel
-                    {
-                        Recipe = recipe,
-                        LabelId = existingLabelId
-                    });
-                }
-                else if (pendingLabelsByName.TryGetValue(labelKey, out var pendingLabel))
-                {
-                    context.RecipeLabels.Add(new RecipeLabel
-                    {
-                        Recipe = recipe,
-                        Label = pendingLabel
-                    });
-                }
-                else
-                {
-                    var newLabel = new Label
-                    {
-                        Name = labelName,
-                        Description = string.Empty
-                    };
-
-                    context.Labels.Add(newLabel);
-                    pendingLabelsByName[labelKey] = newLabel;
-                    labelsCreated++;
-
-                    context.RecipeLabels.Add(new RecipeLabel
-                    {
-                        Recipe = recipe,
-                        Label = newLabel
-                    });
+                    skipped++;
+                    return;
                 }
 
-                recipeLabelsCreated++;
-            }
+                var ingredientItems = NormalizeList(importedRecipe.Ingredients);
+                var directionSteps = NormalizeList(importedRecipe.Directions);
+                var nerItems = NormalizeList(importedRecipe.Ner);
 
-            imported++;
-            batchCount++;
+                var recipe = new Recipe
+                {
+                    Title = title,
+                    Ingredients = FlattenIngredients(ingredientItems),
+                    IngredientItems = ingredientItems.ToArray(),
+                    Directions = FlattenDirections(directionSteps),
+                    DirectionSteps = directionSteps.ToArray(),
+                    Ner = nerItems.ToArray(),
+                    Link = NormalizeLink(importedRecipe.Link),
+                    Source = NormalizeValue(importedRecipe.Source)
+                };
 
-            if (batchCount < ImportBatchSize)
-            {
-                continue;
-            }
+                context.Recipes.Add(recipe);
 
-            await SaveImportBatchAsync(labelIdsByName, pendingLabelsByName, cancellationToken);
-            batchCount = 0;
+                foreach (var labelName in NormalizeLabels(importedRecipe.Labels))
+                {
+                    var labelKey = NormalizeLabelKey(labelName);
+                    if (labelIdsByName.TryGetValue(labelKey, out var existingLabelId))
+                    {
+                        context.RecipeLabels.Add(new RecipeLabel
+                        {
+                            Recipe = recipe,
+                            LabelId = existingLabelId
+                        });
+                    }
+                    else if (pendingLabelsByName.TryGetValue(labelKey, out var pendingLabel))
+                    {
+                        context.RecipeLabels.Add(new RecipeLabel
+                        {
+                            Recipe = recipe,
+                            Label = pendingLabel
+                        });
+                    }
+                    else
+                    {
+                        var newLabel = new Label
+                        {
+                            Name = labelName,
+                            Description = string.Empty
+                        };
+
+                        context.Labels.Add(newLabel);
+                        pendingLabelsByName[labelKey] = newLabel;
+                        labelsCreated++;
+
+                        context.RecipeLabels.Add(new RecipeLabel
+                        {
+                            Recipe = recipe,
+                            Label = newLabel
+                        });
+                    }
+
+                    recipeLabelsCreated++;
+                }
+
+                imported++;
+                batchCount++;
+
+                if (batchCount < ImportBatchSize)
+                {
+                    return;
+                }
+
+                SaveImportBatch(labelIdsByName, pendingLabelsByName);
+                batchCount = 0;
+            }, cancellationToken);
+        }
+        catch (JsonException exception)
+        {
+            context.ChangeTracker.Clear();
+            return BadRequest($"Invalid JSON file: {exception.Message}");
+        }
+
+        if (parsedRecipes == 0)
+        {
+            return BadRequest("The uploaded JSON file does not contain any recipes.");
         }
 
         if (batchCount > 0)
         {
-            await SaveImportBatchAsync(labelIdsByName, pendingLabelsByName, cancellationToken);
+            SaveImportBatch(labelIdsByName, pendingLabelsByName);
         }
 
         return Ok(new
@@ -466,12 +466,11 @@ public class RecipeController(
         return null;
     }
 
-    private async Task SaveImportBatchAsync(
+    private void SaveImportBatch(
         IDictionary<string, int> labelIdsByName,
-        IDictionary<string, Label> pendingLabelsByName,
-        CancellationToken cancellationToken)
+        IDictionary<string, Label> pendingLabelsByName)
     {
-        await context.SaveChangesAsync(cancellationToken);
+        context.SaveChanges();
 
         foreach (var pendingLabel in pendingLabelsByName)
         {
@@ -482,33 +481,182 @@ public class RecipeController(
         context.ChangeTracker.Clear();
     }
 
-    private static async Task<List<ImportedRecipe>> ParseImportedRecipesAsync(
+    private static int ParseImportedRecipes(
         IFormFile file,
+        int? limit,
+        Action<ImportedRecipe> onRecipe,
         CancellationToken cancellationToken)
     {
-        await using var stream = file.OpenReadStream();
-        using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
-
-        JsonElement? recipesElement = null;
-        if (document.RootElement.ValueKind == JsonValueKind.Object)
+        using var stream = file.OpenReadStream();
+        var buffer = ArrayPool<byte>.Shared.Rent(128 * 1024);
+        var bytesInBuffer = 0;
+        var state = new JsonReaderState(new JsonReaderOptions
         {
-            foreach (var property in document.RootElement.EnumerateObject())
+            AllowTrailingCommas = true,
+            CommentHandling = JsonCommentHandling.Skip
+        });
+
+        var rootKind = ImportJsonRootKind.Unknown;
+        var currentRootPropertyName = string.Empty;
+        var insideRecipesArray = false;
+        var recipesArrayDepth = -1;
+        var parsedRecipeCount = 0;
+
+        try
+        {
+            while (true)
             {
-                if (string.Equals(property.Name, "recipes", StringComparison.OrdinalIgnoreCase))
+                cancellationToken.ThrowIfCancellationRequested();
+                buffer = EnsureBufferCapacity(buffer, bytesInBuffer);
+
+                var bytesRead = stream.Read(buffer, bytesInBuffer, buffer.Length - bytesInBuffer);
+                var isFinalBlock = bytesRead == 0;
+                bytesInBuffer += bytesRead;
+
+                var reader = new Utf8JsonReader(
+                    new ReadOnlySpan<byte>(buffer, 0, bytesInBuffer),
+                    isFinalBlock,
+                    state);
+
+                var consumedBytes = 0;
+
+                while (true)
                 {
-                    recipesElement = property.Value;
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    var bytesBeforeRead = (int)reader.BytesConsumed;
+                    var stateBeforeRead = reader.CurrentState;
+
+                    if (!reader.Read())
+                    {
+                        consumedBytes = (int)reader.BytesConsumed;
+                        state = reader.CurrentState;
+                        break;
+                    }
+
+                    switch (reader.TokenType)
+                    {
+                        case JsonTokenType.StartObject:
+                            if (rootKind == ImportJsonRootKind.Unknown && reader.CurrentDepth == 0)
+                            {
+                                rootKind = ImportJsonRootKind.Object;
+                                break;
+                            }
+
+                            if (!insideRecipesArray || reader.CurrentDepth != recipesArrayDepth + 1)
+                            {
+                                break;
+                            }
+
+                            var recipeReader = reader;
+                            if (!JsonDocument.TryParseValue(ref recipeReader, out var recipeDocument))
+                            {
+                                consumedBytes = bytesBeforeRead;
+                                state = stateBeforeRead;
+                                goto CompactBuffer;
+                            }
+
+                            reader = recipeReader;
+                            consumedBytes = (int)reader.BytesConsumed;
+                            state = reader.CurrentState;
+
+                            ImportedRecipe? importedRecipe;
+                            using (recipeDocument)
+                            {
+                                importedRecipe = recipeDocument.RootElement.Deserialize<ImportedRecipe>(ImportJsonSerializerOptions);
+                            }
+
+                            if (importedRecipe is null)
+                            {
+                                break;
+                            }
+
+                            parsedRecipeCount++;
+                            onRecipe(importedRecipe);
+
+                            if (limit.HasValue && parsedRecipeCount >= limit.Value)
+                            {
+                                return parsedRecipeCount;
+                            }
+
+                            break;
+
+                        case JsonTokenType.StartArray:
+                            if (rootKind == ImportJsonRootKind.Unknown && reader.CurrentDepth == 0)
+                            {
+                                rootKind = ImportJsonRootKind.Array;
+                                insideRecipesArray = true;
+                                recipesArrayDepth = 0;
+                                break;
+                            }
+
+                            if (rootKind == ImportJsonRootKind.Object &&
+                                !insideRecipesArray &&
+                                reader.CurrentDepth == 1 &&
+                                string.Equals(currentRootPropertyName, "recipes", StringComparison.OrdinalIgnoreCase))
+                            {
+                                insideRecipesArray = true;
+                                recipesArrayDepth = 1;
+                                currentRootPropertyName = string.Empty;
+                            }
+
+                            break;
+
+                        case JsonTokenType.EndArray:
+                            if (insideRecipesArray && reader.CurrentDepth == recipesArrayDepth)
+                            {
+                                return parsedRecipeCount;
+                            }
+
+                            break;
+
+                        case JsonTokenType.PropertyName:
+                            if (rootKind == ImportJsonRootKind.Object &&
+                                !insideRecipesArray &&
+                                reader.CurrentDepth == 1)
+                            {
+                                currentRootPropertyName = reader.GetString() ?? string.Empty;
+                            }
+
+                            break;
+                    }
+
+                    consumedBytes = (int)reader.BytesConsumed;
+                    state = reader.CurrentState;
+                }
+
+CompactBuffer:
+                if (consumedBytes > 0)
+                {
+                    Buffer.BlockCopy(buffer, consumedBytes, buffer, 0, bytesInBuffer - consumedBytes);
+                    bytesInBuffer -= consumedBytes;
+                }
+
+                if (isFinalBlock)
+                {
                     break;
                 }
             }
         }
-
-        return document.RootElement.ValueKind switch
+        finally
         {
-            JsonValueKind.Array => document.RootElement.Deserialize<List<ImportedRecipe>>(ImportJsonSerializerOptions) ?? [],
-            JsonValueKind.Object when recipesElement.HasValue && recipesElement.Value.ValueKind == JsonValueKind.Array =>
-                recipesElement.Value.Deserialize<List<ImportedRecipe>>(ImportJsonSerializerOptions) ?? [],
-            _ => throw new JsonException("Expected a JSON array or an object with a 'recipes' array.")
-        };
+            ArrayPool<byte>.Shared.Return(buffer);
+        }
+
+        throw new JsonException("Expected a JSON array or an object with a 'recipes' array.");
+    }
+
+    private static byte[] EnsureBufferCapacity(byte[] buffer, int bytesInBuffer)
+    {
+        if (bytesInBuffer < buffer.Length)
+        {
+            return buffer;
+        }
+
+        var expandedBuffer = ArrayPool<byte>.Shared.Rent(buffer.Length * 2);
+        Buffer.BlockCopy(buffer, 0, expandedBuffer, 0, bytesInBuffer);
+        ArrayPool<byte>.Shared.Return(buffer);
+        return expandedBuffer;
     }
 
     private static object ToRecipeDetails(Recipe recipe)
@@ -632,6 +780,13 @@ public class RecipeController(
                link.StartsWith("https://", StringComparison.OrdinalIgnoreCase)
             ? link
             : $"https://{link}";
+    }
+
+    private enum ImportJsonRootKind
+    {
+        Unknown,
+        Array,
+        Object
     }
 
     private sealed class ImportedRecipe
