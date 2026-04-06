@@ -22,3 +22,5 @@ Thumbs.db
 .nuget/
 run.stdout.log
 run.stderr.log
+
+/Data
