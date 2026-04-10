@@ -23,4 +23,6 @@ Thumbs.db
 run.stdout.log
 run.stderr.log
 
-/Data
+/Data/*
+!/Data/labeledFoodnetwork.json
+/Data/labeledFoodnetwork2.json
