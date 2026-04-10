@@ -195,7 +195,7 @@ public class RecipeController(
     [HttpPost("import-json")]
     [Consumes("multipart/form-data")]
     public IActionResult ImportRecipesFromJson(
-        [FromForm] IFormFile? file,
+        IFormFile? file,
         [FromQuery] int? limit,
         CancellationToken cancellationToken)
     {
