@@ -57,6 +57,8 @@ builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(options =>
 {
+    options.OperationFilter<RequiredQueryParameterOperationFilter>();
+
     options.AddSecurityDefinition(AuthConstants.Scheme, new OpenApiSecurityScheme
     {
         Name = "Authorization",
