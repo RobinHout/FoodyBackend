@@ -6,6 +6,7 @@
 - Version 1.1, March 22, 2026: added `UserGroup` endpoints so users can now be linked to groups, listed per user or group, and removed again.
 - Version 1.2, March 27, 2026: added session-based authentication with `register`, `login`, `logout`, `refresh-token`, and `me`, started hashing stored passwords, removed passwords from `/api/User` responses, and required authorization for group, dinner, and membership-changing write operations.
 - Version 1.3, April 6, 2026: added public `Label` endpoints to list labels, fetch one label by id, and search labels by name with case-insensitive prefix matching.
+- Version 1.4, April 13, 2026: recipe responses now include `labels`, dinner recommendations are stored as a persisted top 3 per dinner, and authenticated `Answer` write endpoints refresh those recommendations when dinner input changes.
 
 ## Overview
 
@@ -28,6 +29,8 @@ FoodyBackend is an ASP.NET Core Web API with Swagger and a PostgreSQL database.
 - `/api/User` responses no longer include any password field.
 - Group, dinner, and user-group membership write operations now require an authenticated user with the appropriate group access.
 - Recipe endpoints first query the database and fall back to the CSV source if the database does not contain matching recipes.
+- Database-backed recipe responses now include label names, and CSV fallback responses return `labels: []`.
+- Dinner recommendation results are stored per dinner and refreshed during startup reconciliation plus relevant dinner, answer, and user-group write operations.
 
 ## Authentication
 
@@ -192,7 +195,7 @@ Database-backed recipe response:
   "directions": "Boil pasta and mix the ingredients.",
   "link": "https://example.com/recipe",
   "source": "Database",
-  "data": null
+  "labels": ["pasta", "vegetarian"]
 }
 ```
 
@@ -205,6 +208,7 @@ CSV-backed recipe response may also contain `ner` and raw `data`:
   "directions": "Boil pasta and mix the ingredients.",
   "link": "https://example.com/recipe",
   "source": "Recipes1M",
+  "labels": [],
   "ner": "[\"pasta\",\"tomato\",\"basil\"]",
   "data": "full,csv,row,data"
 }
@@ -483,6 +487,7 @@ Responses:
 | --- | --- | --- |
 | GET | `/api/Dinner` | List all dinners with group details |
 | GET | `/api/Dinner/{id}` | Get one dinner with group details |
+| GET | `/api/Dinner/{id}/recommended-recipes` | Get the persisted top 3 recommended recipes for one dinner |
 | POST | `/api/Dinner` | Create a dinner in a group the current user belongs to |
 | PUT | `/api/Dinner/{id}` | Update a dinner if the current user belongs to the involved group |
 | DELETE | `/api/Dinner/{id}` | Delete a dinner if the current user belongs to the dinner's group |
@@ -555,6 +560,138 @@ Responses:
 - `204 No Content`
 - `401 Unauthorized` if no access token is provided
 - `403 Forbidden` if the current user is not a member of the dinner's group
+- `404 Not Found`
+
+### GET `/api/Dinner/{id}/recommended-recipes`
+
+Headers:
+- `Authorization: Bearer {accessToken}`
+
+Returns the stored top 3 recommendation set for the dinner. The recipes are ranked using group labels plus matched answer labels and include exported recipe labels.
+
+Example response:
+
+```json
+{
+  "dinnerId": 1,
+  "groupId": 2,
+  "tierOneLabels": [
+    {
+      "labelId": 4,
+      "name": "vegetarian",
+      "description": "",
+      "matchCount": 2
+    }
+  ],
+  "tierTwoLabels": [
+    {
+      "labelId": 9,
+      "name": "pasta",
+      "description": "",
+      "matchCount": 1
+    }
+  ],
+  "recipes": [
+    {
+      "recipeId": 12,
+      "recipe": "Pasta Primavera",
+      "ingredients": "pasta, tomato, basil",
+      "directions": "Boil pasta and mix the ingredients.",
+      "link": "https://example.com/recipe",
+      "source": "Database",
+      "labels": ["pasta", "vegetarian"],
+      "score": 210,
+      "tierOneScore": 200,
+      "tierTwoScore": 10,
+      "tierOneMatches": ["vegetarian"],
+      "tierTwoMatches": ["pasta"]
+    }
+  ]
+}
+```
+
+Responses:
+- `200 OK`
+- `401 Unauthorized` if no access token is provided
+- `403 Forbidden` if the current user is not a member of the dinner's group
+- `404 Not Found`
+
+## Answer Endpoints
+
+| Method | Route | Description |
+| --- | --- | --- |
+| POST | `/api/Answer` | Create an answer for a dinner and refresh that dinner's recommendations |
+| PUT | `/api/Answer/{id}` | Update an answer and refresh the affected dinner recommendations |
+| DELETE | `/api/Answer/{id}` | Delete an answer and refresh that dinner's recommendations |
+
+### POST `/api/Answer`
+
+Headers:
+- `Authorization: Bearer {accessToken}`
+
+Request body:
+
+```json
+{
+  "dinnerId": 1,
+  "userId": 3,
+  "level": "high",
+  "question": "vegetarian pasta"
+}
+```
+
+Success response:
+
+```json
+{
+  "id": 10,
+  "dinnerId": 1,
+  "userId": 3,
+  "username": "robin",
+  "level": "high",
+  "question": "vegetarian pasta"
+}
+```
+
+Responses:
+- `201 Created`
+- `400 Bad Request` if any required field is missing, if the dinner does not exist, or if the user is not a member of the dinner's group
+- `401 Unauthorized` if no access token is provided
+- `403 Forbidden` if the current user is not a member of the dinner's group
+
+### PUT `/api/Answer/{id}`
+
+Headers:
+- `Authorization: Bearer {accessToken}`
+
+Request body:
+
+```json
+{
+  "id": 10,
+  "dinnerId": 1,
+  "userId": 3,
+  "level": "medium",
+  "question": "vegetarian pasta with mushrooms"
+}
+```
+
+Responses:
+- `204 No Content`
+- `400 Bad Request` when route id and body id differ, when required fields are missing, when the dinner does not exist, or when the user is not a member of the dinner's group
+- `401 Unauthorized` if no access token is provided
+- `403 Forbidden` if the current user is not a member of the target dinner's group
+- `404 Not Found`
+
+### DELETE `/api/Answer/{id}`
+
+Headers:
+- `Authorization: Bearer {accessToken}`
+
+Responses:
+- `204 No Content`
+- `401 Unauthorized` if no access token is provided
+- `403 Forbidden` if the current user is not a member of the answer dinner's group
 - `404 Not Found`
 
 ## UserGroup Endpoints
