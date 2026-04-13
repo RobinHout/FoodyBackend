@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using FoodyBackend.Contracts;
 using FoodyBackend.Models;
+using FoodyBackend.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.ModelBinding;
 using Microsoft.EntityFrameworkCore;
@@ -15,7 +16,8 @@ namespace FoodyBackend.Controllers;
 public class RecipeController(
     DatabaseContext context,
     IConfiguration configuration,
-    IWebHostEnvironment environment) : ControllerBase
+    IWebHostEnvironment environment,
+    IDinnerRecommendationService recommendationService) : ControllerBase
 {
     private const int ImportBatchSize = 250;
     private const string PrimaryJsonSourceKey = "primary";
@@ -188,6 +190,8 @@ public class RecipeController(
             await context.SaveChangesAsync(cancellationToken);
         }
 
+        await recommendationService.RebuildAllDinnerRecommendationsAsync(cancellationToken);
+
         return Ok(new
         {
             imported,
@@ -197,7 +201,7 @@ public class RecipeController(
 
     [HttpPost("import-json")]
     [Consumes("multipart/form-data")]
-    public IActionResult ImportRecipesFromJson(
+    public async Task<IActionResult> ImportRecipesFromJson(
         IFormFile? file,
         [FromQuery] int? limit,
         CancellationToken cancellationToken)
@@ -221,6 +225,8 @@ public class RecipeController(
             {
                 return BadRequest("The uploaded JSON file does not contain any recipes.");
             }
+
+            await recommendationService.RebuildAllDinnerRecommendationsAsync(cancellationToken);
 
             return Ok(new
             {
@@ -273,6 +279,8 @@ public class RecipeController(
             {
                 return BadRequest("The selected JSON source does not contain any recipes.");
             }
+
+            await recommendationService.RebuildAllDinnerRecommendationsAsync(cancellationToken);
 
             var sourceFile = Path.GetFileName(sourcePath);
             return Ok(new
@@ -1054,3 +1062,4 @@ CompactBuffer:
         public string? Source { get; init; }
     }
 }
+

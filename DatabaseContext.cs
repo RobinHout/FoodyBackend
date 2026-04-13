@@ -9,6 +9,7 @@ public class DatabaseContext(DbContextOptions<DatabaseContext> options) : DbCont
     public DbSet<AuthSession> AuthSessions => Set<AuthSession>();
     public DbSet<Group> Groups => Set<Group>();
     public DbSet<Dinner> Dinners => Set<Dinner>();
+    public DbSet<DinnerParticipation> DinnerParticipations => Set<DinnerParticipation>();
     public DbSet<DinnerRecipeOption> DinnerRecipeOptions => Set<DinnerRecipeOption>();
     public DbSet<Recipe> Recipes => Set<Recipe>();
     public DbSet<Label> Labels => Set<Label>();
@@ -25,6 +26,22 @@ public class DatabaseContext(DbContextOptions<DatabaseContext> options) : DbCont
             .HasOne(dinner => dinner.Group)
             .WithMany()
             .HasForeignKey(dinner => dinner.GroupId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        modelBuilder.Entity<DinnerParticipation>()
+            .HasIndex(participation => new { participation.DinnerId, participation.UserId })
+            .IsUnique();
+
+        modelBuilder.Entity<DinnerParticipation>()
+            .HasOne(participation => participation.Dinner)
+            .WithMany()
+            .HasForeignKey(participation => participation.DinnerId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        modelBuilder.Entity<DinnerParticipation>()
+            .HasOne(participation => participation.User)
+            .WithMany()
+            .HasForeignKey(participation => participation.UserId)
             .OnDelete(DeleteBehavior.Cascade);
 
         modelBuilder.Entity<DinnerRecipeOption>()
@@ -98,6 +115,10 @@ public class DatabaseContext(DbContextOptions<DatabaseContext> options) : DbCont
             .OnDelete(DeleteBehavior.Cascade);
 
         modelBuilder.Entity<UserLabel>()
+            .HasIndex(userLabel => new { userLabel.UserId, userLabel.LabelId })
+            .IsUnique();
+
+        modelBuilder.Entity<UserLabel>()
             .HasOne(userLabel => userLabel.User)
             .WithMany()
             .HasForeignKey(userLabel => userLabel.UserId)
@@ -110,4 +131,3 @@ public class DatabaseContext(DbContextOptions<DatabaseContext> options) : DbCont
             .OnDelete(DeleteBehavior.Cascade);
     }
 }
-

@@ -23,9 +23,15 @@ public sealed class DinnerRecommendationService(DatabaseContext context) : IDinn
             return null;
         }
 
-        var tierOneLabels = await GetTierOneLabelsAsync(dinner.GroupId, cancellationToken);
+        var groupUserIds = await GetGroupUserIdsAsync(dinner.GroupId, cancellationToken);
+        var tierOneLabels = await GetTierOneLabelsAsync(groupUserIds, cancellationToken);
+        var excludedLabelIds = await GetExcludedLabelIdsAsync(groupUserIds, cancellationToken);
         var tierOneLookup = tierOneLabels.ToDictionary(label => label.LabelId);
-        var tierTwoLabels = await GetTierTwoLabelsAsync(dinner.Id, tierOneLookup.Keys.ToHashSet(), cancellationToken);
+        var tierTwoLabels = await GetTierTwoLabelsAsync(
+            dinner.Id,
+            tierOneLookup.Keys.ToHashSet(),
+            excludedLabelIds,
+            cancellationToken);
         var tierTwoLookup = tierTwoLabels.ToDictionary(label => label.LabelId);
 
         var optionRows = await context.DinnerRecipeOptions
@@ -109,12 +115,19 @@ public sealed class DinnerRecommendationService(DatabaseContext context) : IDinn
             return;
         }
 
-        var tierOneLabels = await GetTierOneLabelsAsync(dinner.GroupId, cancellationToken);
+        var groupUserIds = await GetGroupUserIdsAsync(dinner.GroupId, cancellationToken);
+        var tierOneLabels = await GetTierOneLabelsAsync(groupUserIds, cancellationToken);
+        var excludedLabelIds = await GetExcludedLabelIdsAsync(groupUserIds, cancellationToken);
         var tierTwoLabels = await GetTierTwoLabelsAsync(
             dinner.Id,
             tierOneLabels.Select(label => label.LabelId).ToHashSet(),
+            excludedLabelIds,
             cancellationToken);
-        var rankedRecipes = await GetRankedRecipesAsync(tierOneLabels, tierTwoLabels, cancellationToken);
+        var rankedRecipes = await GetRankedRecipesAsync(
+            tierOneLabels,
+            tierTwoLabels,
+            excludedLabelIds,
+            cancellationToken);
 
         await using var transaction = await context.Database.BeginTransactionAsync(cancellationToken);
 
@@ -172,17 +185,20 @@ public sealed class DinnerRecommendationService(DatabaseContext context) : IDinn
         }
     }
 
-    private async Task<List<RecommendedLabelTierItemDto>> GetTierOneLabelsAsync(
-        int groupId,
-        CancellationToken cancellationToken)
+    private async Task<List<int>> GetGroupUserIdsAsync(int groupId, CancellationToken cancellationToken)
     {
-        var groupUserIds = await context.UserGroups
+        return await context.UserGroups
             .AsNoTracking()
             .Where(link => link.GroupId == groupId)
             .Select(link => link.UserId)
             .Distinct()
             .ToListAsync(cancellationToken);
+    }
 
+    private async Task<List<RecommendedLabelTierItemDto>> GetTierOneLabelsAsync(
+        IReadOnlyCollection<int> groupUserIds,
+        CancellationToken cancellationToken)
+    {
         if (groupUserIds.Count == 0)
         {
             return [];
@@ -190,7 +206,7 @@ public sealed class DinnerRecommendationService(DatabaseContext context) : IDinn
 
         var userLabels = await context.UserLabels
             .AsNoTracking()
-            .Where(link => groupUserIds.Contains(link.UserId))
+            .Where(link => groupUserIds.Contains(link.UserId) && link.Category == UserLabelCategories.Preference)
             .Select(link => new
             {
                 link.UserId,
@@ -212,67 +228,93 @@ public sealed class DinnerRecommendationService(DatabaseContext context) : IDinn
             .ToList();
     }
 
+    private async Task<HashSet<int>> GetExcludedLabelIdsAsync(
+        IReadOnlyCollection<int> groupUserIds,
+        CancellationToken cancellationToken)
+    {
+        if (groupUserIds.Count == 0)
+        {
+            return [];
+        }
+
+        var labelIds = await context.UserLabels
+            .AsNoTracking()
+            .Where(link => groupUserIds.Contains(link.UserId) && link.Category == UserLabelCategories.Allergy)
+            .Select(link => link.LabelId)
+            .Distinct()
+            .ToListAsync(cancellationToken);
+
+        return labelIds.ToHashSet();
+    }
+
     private async Task<List<RecommendedLabelTierItemDto>> GetTierTwoLabelsAsync(
         int dinnerId,
         ISet<int> tierOneLabelIds,
+        ISet<int> excludedLabelIds,
         CancellationToken cancellationToken)
     {
-        var answers = await context.Answers
+        var participations = await context.DinnerParticipations
             .AsNoTracking()
-            .Where(answer => answer.DinnerId == dinnerId)
-            .Select(answer => new
-            {
-                answer.Id,
-                answer.Question,
-                answer.Level
-            })
+            .Where(item => item.DinnerId == dinnerId && item.Attending == DinnerAttendanceValues.Yes)
+            .Select(item => new DinnerParticipationChoiceProjection(
+                item.Q1Choice,
+                item.Q2Choice,
+                item.Q3Choice))
             .ToListAsync(cancellationToken);
-
-        if (answers.Count == 0)
+        if (participations.Count == 0)
         {
             return [];
         }
 
         var labels = await context.Labels
             .AsNoTracking()
-            .Select(label => new
-            {
+            .Select(label => new LabelLookupProjection(
                 label.Id,
                 label.Name,
                 label.Description,
-                NormalizedName = NormalizeForMatching(label.Name)
-            })
+                NormalizeLabelKey(label.Name)))
+            .OrderBy(label => label.Id)
             .ToListAsync(cancellationToken);
-
-        var matches = new List<(int AnswerId, int LabelId, string LabelName, string LabelDescription)>();
-
-        foreach (var answer in answers)
+        if (labels.Count == 0)
         {
-            var answerTokens = TokenizeForMatching($"{answer.Question} {answer.Level}");
-            if (answerTokens.Count == 0)
-            {
-                continue;
-            }
+            return [];
+        }
 
-            foreach (var label in labels)
+        var labelByKey = labels
+            .Where(label => !string.IsNullOrWhiteSpace(label.Key))
+            .GroupBy(label => label.Key, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
+        var matchCounts = new Dictionary<int, int>();
+
+        foreach (var participation in participations)
+        {
+            foreach (var choice in new[] { participation.Q1Choice, participation.Q2Choice, participation.Q3Choice })
             {
-                if (tierOneLabelIds.Contains(label.Id) ||
-                    !DoesAnswerMatchLabel(answerTokens, label.NormalizedName))
+                var key = NormalizeLabelKey(choice);
+                if (string.IsNullOrWhiteSpace(key) || !labelByKey.TryGetValue(key, out var label))
                 {
                     continue;
                 }
 
-                matches.Add((answer.Id, label.Id, label.Name, label.Description));
+                if (tierOneLabelIds.Contains(label.Id) || excludedLabelIds.Contains(label.Id))
+                {
+                    continue;
+                }
+
+                matchCounts[label.Id] = matchCounts.GetValueOrDefault(label.Id) + 1;
             }
         }
 
-        return matches
-            .GroupBy(match => new { match.LabelId, match.LabelName, match.LabelDescription })
-            .Select(group => new RecommendedLabelTierItemDto(
-                group.Key.LabelId,
-                group.Key.LabelName,
-                group.Key.LabelDescription,
-                group.Select(item => item.AnswerId).Distinct().Count()))
+        return matchCounts
+            .Select(entry =>
+            {
+                var label = labels.First(item => item.Id == entry.Key);
+                return new RecommendedLabelTierItemDto(
+                    label.Id,
+                    label.Name,
+                    label.Description,
+                    entry.Value);
+            })
             .OrderByDescending(label => label.MatchCount)
             .ThenBy(label => label.Name)
             .ToList();
@@ -281,23 +323,25 @@ public sealed class DinnerRecommendationService(DatabaseContext context) : IDinn
     private async Task<List<RankedRecipeCandidate>> GetRankedRecipesAsync(
         IReadOnlyCollection<RecommendedLabelTierItemDto> tierOneLabels,
         IReadOnlyCollection<RecommendedLabelTierItemDto> tierTwoLabels,
+        ISet<int> excludedLabelIds,
         CancellationToken cancellationToken)
     {
         var tierOneLookup = tierOneLabels.ToDictionary(label => label.LabelId, label => label);
         var tierTwoLookup = tierTwoLabels.ToDictionary(label => label.LabelId, label => label);
-        var allLabelIds = tierOneLookup.Keys
+        var relevantLabelIds = tierOneLookup.Keys
             .Concat(tierTwoLookup.Keys)
+            .Concat(excludedLabelIds)
             .Distinct()
             .ToList();
 
-        if (allLabelIds.Count == 0)
+        if (relevantLabelIds.Count == 0)
         {
             return [];
         }
 
         var recipeLabels = await context.RecipeLabels
             .AsNoTracking()
-            .Where(link => allLabelIds.Contains(link.LabelId))
+            .Where(link => relevantLabelIds.Contains(link.LabelId))
             .Select(link => new
             {
                 link.RecipeId,
@@ -314,6 +358,10 @@ public sealed class DinnerRecommendationService(DatabaseContext context) : IDinn
                     .Select(item => item.LabelId)
                     .Distinct()
                     .ToList();
+                if (matchedLabelIds.Any(excludedLabelIds.Contains))
+                {
+                    return null;
+                }
 
                 var tierOneMatchCount = matchedLabelIds.Count(labelId => tierOneLookup.ContainsKey(labelId));
                 var tierTwoMatchCount = matchedLabelIds.Count(labelId => tierTwoLookup.ContainsKey(labelId));
@@ -333,7 +381,8 @@ public sealed class DinnerRecommendationService(DatabaseContext context) : IDinn
                     tierOneMatchCount,
                     tierTwoMatchCount);
             })
-            .Where(recipe => recipe.Score > 0)
+            .Where(recipe => recipe is not null && recipe.Score > 0)
+            .Select(recipe => recipe!)
             .OrderByDescending(recipe => recipe.TierOneScore)
             .ThenByDescending(recipe => recipe.TierTwoScore)
             .ThenByDescending(recipe => recipe.TierOneMatchCount)
@@ -366,41 +415,11 @@ public sealed class DinnerRecommendationService(DatabaseContext context) : IDinn
             .ToDictionary(group => group.Key, group => group.ToList());
     }
 
-    private static HashSet<string> TokenizeForMatching(string? text)
+    private static string NormalizeLabelKey(string? value)
     {
-        return NormalizeForMatching(text)
-            .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .ToHashSet(StringComparer.Ordinal);
-    }
-
-    private static string NormalizeForMatching(string? text)
-    {
-        if (string.IsNullOrWhiteSpace(text))
-        {
-            return string.Empty;
-        }
-
-        var characters = text
-            .Trim()
-            .ToLowerInvariant()
-            .Select(character => char.IsLetterOrDigit(character) ? character : ' ')
-            .ToArray();
-
-        return string.Join(' ', new string(characters)
-            .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
-    }
-
-    private static bool DoesAnswerMatchLabel(IReadOnlySet<string> answerTokens, string normalizedLabelName)
-    {
-        if (string.IsNullOrWhiteSpace(normalizedLabelName))
-        {
-            return false;
-        }
-
-        var labelTokens = normalizedLabelName
-            .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-
-        return labelTokens.Length > 0 && labelTokens.All(answerTokens.Contains);
+        return string.IsNullOrWhiteSpace(value)
+            ? string.Empty
+            : value.Trim().ToLowerInvariant();
     }
 
     private static string GetIngredients(string ingredients, IReadOnlyList<string> ingredientItems)
@@ -442,6 +461,17 @@ public sealed class DinnerRecommendationService(DatabaseContext context) : IDinn
         int Score,
         int TierOneScore,
         int TierTwoScore);
+
+    private sealed record DinnerParticipationChoiceProjection(
+        string? Q1Choice,
+        string? Q2Choice,
+        string? Q3Choice);
+
+    private sealed record LabelLookupProjection(
+        int Id,
+        string Name,
+        string Description,
+        string Key);
 
     private sealed record RecipeLabelReference(int RecipeId, int LabelId, string LabelName);
 
