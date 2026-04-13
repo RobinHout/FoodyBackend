@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Text;
 using System.Text.Json;
+using FoodyBackend.Contracts;
 using FoodyBackend.Models;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.ModelBinding;
@@ -40,7 +41,7 @@ public class RecipeController(
         var recipe = await GetRandomDatabaseRecipeAsync(cancellationToken);
         if (recipe != null)
         {
-            return Ok(ToRecipeDetails(recipe));
+            return Ok(await ToRecipeDetailsAsync(recipe, cancellationToken));
         }
 
         var csvRecipe = GetRandomCsvRecipe();
@@ -60,19 +61,11 @@ public class RecipeController(
             .Where(recipe => EF.Functions.Like(recipe.Ingredients, $"%{ingredient}%"))
             .OrderBy(recipe => recipe.Id)
             .Take(50)
-            .Select(recipe => new
-            {
-                recipe = recipe.Title,
-                ingredients = recipe.Ingredients,
-                directions = recipe.Directions,
-                link = recipe.Link,
-                source = recipe.Source
-            })
             .ToListAsync(cancellationToken);
 
         if (matches.Count > 0)
         {
-            return Ok(matches);
+            return Ok(await ToRecipeDetailsAsync(matches, cancellationToken));
         }
 
         var csvMatches = GetCsvRecipesByIngredient(ingredient);
@@ -97,7 +90,7 @@ public class RecipeController(
 
         if (databaseRecipe != null)
         {
-            return Ok(ToRecipeDetails(databaseRecipe));
+            return Ok(await ToRecipeDetailsAsync(databaseRecipe, cancellationToken));
         }
 
         var csvRecipe = GetCsvRecipeByNumber(number);
@@ -122,7 +115,7 @@ public class RecipeController(
 
         if (recipe != null)
         {
-            return Ok(ToRecipeDetails(recipe));
+            return Ok(await ToRecipeDetailsAsync(recipe, cancellationToken));
         }
 
         var csvRecipe = GetCsvRecipesByIngredient(ingredient).FirstOrDefault();
@@ -774,34 +767,92 @@ CompactBuffer:
         return expandedBuffer;
     }
 
-    private static object ToRecipeDetails(Recipe recipe)
+    private async Task<RecipeExportDto> ToRecipeDetailsAsync(Recipe recipe, CancellationToken cancellationToken)
     {
-        return new
+        var labelsByRecipeId = await GetLabelsByRecipeIdAsync([recipe.Id], cancellationToken);
+        return ToRecipeDetails(recipe, labelsByRecipeId.GetValueOrDefault(recipe.Id) ?? []);
+    }
+
+    private async Task<IReadOnlyList<RecipeExportDto>> ToRecipeDetailsAsync(
+        IReadOnlyCollection<Recipe> recipes,
+        CancellationToken cancellationToken)
+    {
+        if (recipes.Count == 0)
         {
-            recipe = recipe.Title,
-            ingredients = string.IsNullOrWhiteSpace(recipe.Ingredients)
+            return [];
+        }
+
+        var orderedRecipes = recipes
+            .OrderBy(recipe => recipe.Id)
+            .ToList();
+        var labelsByRecipeId = await GetLabelsByRecipeIdAsync(
+            orderedRecipes.Select(recipe => recipe.Id).ToList(),
+            cancellationToken);
+
+        return orderedRecipes
+            .Select(recipe => ToRecipeDetails(recipe, labelsByRecipeId.GetValueOrDefault(recipe.Id) ?? []))
+            .ToList();
+    }
+
+    private async Task<Dictionary<int, List<string>>> GetLabelsByRecipeIdAsync(
+        IReadOnlyCollection<int> recipeIds,
+        CancellationToken cancellationToken)
+    {
+        if (recipeIds.Count == 0)
+        {
+            return [];
+        }
+
+        var labels = await context.RecipeLabels
+            .AsNoTracking()
+            .Where(link => recipeIds.Contains(link.RecipeId))
+            .Select(link => new
+            {
+                link.RecipeId,
+                LabelName = link.Label!.Name
+            })
+            .ToListAsync(cancellationToken);
+
+        return labels
+            .GroupBy(link => link.RecipeId)
+            .ToDictionary(
+                group => group.Key,
+                group => group
+                    .Select(item => item.LabelName)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .OrderBy(name => name)
+                    .ToList());
+    }
+
+    private static RecipeExportDto ToRecipeDetails(Recipe recipe, IReadOnlyCollection<string> labels)
+    {
+        return new RecipeExportDto
+        {
+            Recipe = recipe.Title,
+            Ingredients = string.IsNullOrWhiteSpace(recipe.Ingredients)
                 ? FlattenIngredients(recipe.IngredientItems)
                 : recipe.Ingredients,
-            directions = string.IsNullOrWhiteSpace(recipe.Directions)
+            Directions = string.IsNullOrWhiteSpace(recipe.Directions)
                 ? FlattenDirections(recipe.DirectionSteps)
                 : recipe.Directions,
-            link = NormalizeLink(recipe.Link),
-            source = recipe.Source,
-            data = (string?)null
+            Link = NormalizeLink(recipe.Link),
+            Source = recipe.Source,
+            Labels = labels
         };
     }
 
-    private static object ToRecipeDetails(IReadOnlyList<string> fields)
+    private static RecipeExportDto ToRecipeDetails(IReadOnlyList<string> fields)
     {
-        return new
+        return new RecipeExportDto
         {
-            recipe = fields.ElementAtOrDefault(0),
-            ingredients = fields.ElementAtOrDefault(1),
-            directions = fields.ElementAtOrDefault(2),
-            link = NormalizeLink(fields.ElementAtOrDefault(3)),
-            source = fields.ElementAtOrDefault(4),
-            ner = fields.ElementAtOrDefault(5),
-            data = string.Join(",", fields)
+            Recipe = fields.ElementAtOrDefault(0) ?? string.Empty,
+            Ingredients = fields.ElementAtOrDefault(1) ?? string.Empty,
+            Directions = fields.ElementAtOrDefault(2) ?? string.Empty,
+            Link = NormalizeLink(fields.ElementAtOrDefault(3)),
+            Source = fields.ElementAtOrDefault(4) ?? string.Empty,
+            Labels = [],
+            Ner = fields.ElementAtOrDefault(5),
+            Data = string.Join(",", fields)
         };
     }
 

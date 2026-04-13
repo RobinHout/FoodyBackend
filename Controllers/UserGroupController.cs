@@ -1,5 +1,6 @@
 using FoodyBackend.Auth;
 using FoodyBackend.Models;
+using FoodyBackend.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -8,7 +9,9 @@ namespace FoodyBackend.Controllers;
 
 [Route("api/[controller]")]
 [ApiController]
-public class UserGroupController(DatabaseContext context) : ControllerBase
+public class UserGroupController(
+    DatabaseContext context,
+    IDinnerRecommendationService recommendationService) : ControllerBase
 {
     [HttpGet]
     public async Task<ActionResult<IEnumerable<UserGroupResponse>>> GetUserGroups(CancellationToken cancellationToken)
@@ -92,6 +95,7 @@ public class UserGroupController(DatabaseContext context) : ControllerBase
 
         context.UserGroups.Add(link);
         await context.SaveChangesAsync(cancellationToken);
+        await recommendationService.RefreshGroupDinnerRecommendationsAsync(link.GroupId, cancellationToken);
 
         var created = await BuildQuery(context.UserGroups
                 .Where(item => item.Id == link.Id))
@@ -117,8 +121,10 @@ public class UserGroupController(DatabaseContext context) : ControllerBase
             return Forbid();
         }
 
+        var groupId = userGroup.GroupId;
         context.UserGroups.Remove(userGroup);
         await context.SaveChangesAsync(cancellationToken);
+        await recommendationService.RefreshGroupDinnerRecommendationsAsync(groupId, cancellationToken);
 
         return NoContent();
     }

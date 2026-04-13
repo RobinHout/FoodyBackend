@@ -9,6 +9,7 @@ public class DatabaseContext(DbContextOptions<DatabaseContext> options) : DbCont
     public DbSet<AuthSession> AuthSessions => Set<AuthSession>();
     public DbSet<Group> Groups => Set<Group>();
     public DbSet<Dinner> Dinners => Set<Dinner>();
+    public DbSet<DinnerRecipeOption> DinnerRecipeOptions => Set<DinnerRecipeOption>();
     public DbSet<Recipe> Recipes => Set<Recipe>();
     public DbSet<Label> Labels => Set<Label>();
     public DbSet<RecipeLabel> RecipeLabels => Set<RecipeLabel>();
@@ -24,6 +25,22 @@ public class DatabaseContext(DbContextOptions<DatabaseContext> options) : DbCont
             .HasOne(dinner => dinner.Group)
             .WithMany()
             .HasForeignKey(dinner => dinner.GroupId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        modelBuilder.Entity<DinnerRecipeOption>()
+            .HasIndex(option => new { option.DinnerId, option.Rank })
+            .IsUnique();
+
+        modelBuilder.Entity<DinnerRecipeOption>()
+            .HasOne(option => option.Dinner)
+            .WithMany()
+            .HasForeignKey(option => option.DinnerId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        modelBuilder.Entity<DinnerRecipeOption>()
+            .HasOne(option => option.Recipe)
+            .WithMany()
+            .HasForeignKey(option => option.RecipeId)
             .OnDelete(DeleteBehavior.Cascade);
 
         modelBuilder.Entity<AuthSession>()

@@ -1,6 +1,7 @@
 using FoodyBackend;
 using FoodyBackend.Auth;
 using FoodyBackend.Models;
+using FoodyBackend.Services;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
@@ -53,6 +54,7 @@ builder.Services
 builder.Services.AddAuthorization();
 builder.Services.AddScoped<IPasswordHasher<User>, PasswordHasher<User>>();
 builder.Services.AddScoped<IAuthSessionService, AuthSessionService>();
+builder.Services.AddScoped<IDinnerRecommendationService, DinnerRecommendationService>();
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(options =>
@@ -84,6 +86,9 @@ using (var scope = app.Services.CreateScope())
 
     var passwordHasher = scope.ServiceProvider.GetRequiredService<IPasswordHasher<User>>();
     await LegacyPasswordMigration.UpgradePlainTextPasswordsAsync(database, passwordHasher);
+
+    var recommendationService = scope.ServiceProvider.GetRequiredService<IDinnerRecommendationService>();
+    await recommendationService.RebuildAllDinnerRecommendationsAsync(CancellationToken.None);
 }
 
 if (app.Environment.IsDevelopment())
